@@ -9,6 +9,7 @@ fn handle_ping<W: Write>(_input: &mut String, output: &mut W) -> io::Result<()> 
     Ok(())
 }
 
+/// Handle a single connection until disconnected
 fn handle_connection(stream: TcpStream) -> io::Result<()> {
     let (mut input, mut output) = (
         BufReader::new(stream.try_clone()?),
