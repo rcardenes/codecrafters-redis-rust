@@ -3,7 +3,6 @@ use std::net::{TcpListener, TcpStream};
 
 /// Respond to a PING command
 fn handle_ping<W: Write>(_input: &mut String, output: &mut W) -> io::Result<()> {
-    println!("Writing 'PONG'");
     output.write(b"+PONG\r\n")?;
     output.flush()?;
     Ok(())
@@ -20,13 +19,22 @@ fn handle_connection(stream: TcpStream) -> io::Result<()> {
     loop {
         let mut buf = String::new();
         input.read_line(&mut buf)?;
-        println!("{}", buf);
 
-        match handle_ping(&mut buf, &mut output) {
-            Err(e) => {
-                println!("error: {}", e);
+        let is_alpha = buf
+            .as_str()
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic())
+            .or_else(|| Some(false))
+            .unwrap();
+
+        if is_alpha {
+            match handle_ping(&mut buf, &mut output) {
+                Err(e) => {
+                    println!("error: {}", e);
+                }
+                _ => {}
             }
-            _ => {}
         };
     }
 }
