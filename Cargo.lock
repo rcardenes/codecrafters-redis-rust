@@ -154,7 +154,6 @@ dependencies = [
  "anyhow",
  "bytes",
  "log",
- "mio",
  "thiserror",
  "tokio",
 ]
