@@ -18,10 +18,19 @@ async fn handle_ping(stream: &mut TcpReader, args: &[&str]) -> Result<()> {
     }
 }
 
+/// Respond to an ECHO command
+async fn handle_echo(stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+    match args.len() {
+        1 => write_string(stream, args[0]).await,
+        _ => bail!("wrong number of arguments for 'echo' command")
+    }
+}
+
 async fn dispatch(stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
     let name = cmd_vec[0];
     match name.to_ascii_lowercase().as_str() {
         "ping" => { handle_ping(stream, &cmd_vec[1..]).await? }
+        "echo" => { handle_echo(stream, &cmd_vec[1..]).await? }
         _ => {
             let args = cmd_vec[1..]
                 .iter()

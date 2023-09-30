@@ -11,3 +11,6 @@ target/
 
 # Ignore RustRover's data as well
 .idea/
+
+# Ignore leftover Redis database dump file
+dump.rdb
