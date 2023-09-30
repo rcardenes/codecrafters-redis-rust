@@ -2,21 +2,40 @@ use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Respond to a PING command
-async fn handle_ping(stream: &mut BufReader<TcpStream>, _args: Vec<String>) -> Result<()> {
-    stream.write(b"+PONG\r\n").await.map(|_| Ok(()))?
+type TcpReader = BufReader<TcpStream>;
+
+async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
+    let output = format!("${}\r\n{}\r\n", string.len(), string);
+    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
 }
 
-async fn dispatch(stream: &mut BufReader<TcpStream>, cmd_vec: Command) -> Result<()> {
-    let cmd = &cmd_vec[0];
-    match cmd.to_ascii_lowercase().as_str() {
-        _ => { handle_ping(stream, vec![]).await? }
-         // => { }
+/// Respond to a PING command
+async fn handle_ping(stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+    match args.len() {
+        0 => stream.write(b"+PONG\r\n").await.map(|_| Ok(()))?,
+        1 => write_string(stream, args[0]).await,
+        _ => bail!("wrong number of arguments for 'ping' command")
+    }
+}
+
+async fn dispatch(stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
+    let name = cmd_vec[0];
+    match name.to_ascii_lowercase().as_str() {
+        "ping" => { handle_ping(stream, &cmd_vec[1..]).await? }
+        _ => {
+            let args = cmd_vec[1..]
+                .iter()
+                .map(|s| format!("'{}'", *s))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let error_msg = format!("unknown command '{}', with args beginning with: {}", name, args);
+            bail!(error_msg)
+        }
     }
     Ok(())
 }
 
-async fn get_string(stream: &mut BufReader<TcpStream>) -> Result<Option<String>> {
+async fn get_string(stream: &mut TcpReader) -> Result<Option<String>> {
     let mut buf = String::new();
     let read_chars = stream.read_line(&mut buf).await?;
 
@@ -29,9 +48,9 @@ async fn get_string(stream: &mut BufReader<TcpStream>) -> Result<Option<String>>
 
 type Command = Vec<String>;
 
-async fn read_bulk_string(stream: &mut BufReader<TcpStream>) -> Result<Option<String>> {
+async fn read_bulk_string(stream: &mut TcpReader) -> Result<Option<String>> {
     fn format_error<'a>(chr: char) -> String {
-        format!("-ERR Protocol error: expected '$', got '{}'", chr)
+        format!("Protocol error: expected '$', got '{}'", chr)
     }
 
     if let Some(size_string) = get_string(stream).await? {
@@ -41,7 +60,7 @@ async fn read_bulk_string(stream: &mut BufReader<TcpStream>) -> Result<Option<St
             bail!(format_error(size_string.chars().next().unwrap()))
         } else {
             let string_size = size_string[1..].parse::<usize>()
-                .map_err(|_| Error::msg("-ERR Protocol error: invalid bulk length"))?;
+                .map_err(|_| Error::msg("Protocol error: invalid bulk length"))?;
             let mut buf: Vec<u8> = vec![0; string_size + 2];
             stream.read_exact(buf.as_mut_slice()).await?;
             let bulk_string = String::from_utf8_lossy(&buf[..string_size]).to_string();
@@ -52,11 +71,11 @@ async fn read_bulk_string(stream: &mut BufReader<TcpStream>) -> Result<Option<St
     }
 }
 
-async fn read_command(stream: &mut BufReader<TcpStream>) -> Result<Option<Command>> {
+async fn read_command(stream: &mut TcpReader) -> Result<Option<Command>> {
     if let Some(text) = get_string(stream).await? {
         if text.starts_with("*") {
             let chunks = text[1..].parse::<usize>()
-                .map_err(|_| Error::msg("-ERR Protocol error: invalid multibulk length"))?;
+                .map_err(|_| Error::msg("Protocol error: invalid multibulk length"))?;
             let mut cmd = Command::new();
             for _ in 0..chunks {
                 if let Some(cmd_part) = read_bulk_string(stream).await? {
@@ -74,6 +93,11 @@ async fn read_command(stream: &mut BufReader<TcpStream>) -> Result<Option<Comman
     }
 }
 
+async fn send_error_message(stream: &mut TcpReader, msg: &str) {
+    let msg = format!("-ERR {}\r\n", msg);
+    let _ = stream.write(msg.as_bytes()).await;
+}
+
 async fn handle_events<'a>(stream: TcpStream) {
     let addr = stream.local_addr().unwrap();
     eprintln!("Handling events from {addr}");
@@ -82,15 +106,15 @@ async fn handle_events<'a>(stream: TcpStream) {
         match read_command(&mut stream).await {
             Ok(cnt) => match cnt {
                 Some(cmd) => {
-                    if let Err(error) = dispatch(&mut stream, cmd).await {
-                        eprintln!("{error}");
+                    let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+                    if let Err(error) = dispatch(&mut stream, strs.as_slice()).await {
+                        send_error_message(&mut stream, &error.to_string()).await;
                     }
                 }
                 None => {}
             },
             Err(error) => {
-                let msg = [error.to_string().as_bytes(), b"\r\n"].concat();
-                let _ = stream.write(&msg).await;
+                send_error_message(&mut stream, &error.to_string()).await;
                 break;
             }
         }
