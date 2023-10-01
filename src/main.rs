@@ -5,6 +5,7 @@ use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep};
 
 type TcpReader = BufReader<TcpStream>;
 
@@ -27,13 +28,40 @@ impl RedisServer {
         }
     }
 
+    async fn spawn_expire(&mut self, key: String, how_long: Duration) {
+        tokio::spawn({
+            let store = Arc::clone(&self.store);
+            async move {
+                sleep(how_long).await;
+                store.lock().await.remove(&key);
+            }
+        });
+    }
+
     async fn handle_set(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
-            2 => {
+            2 | 4 => {
+                let duration = if args.len() == 4 {
+                    if args[2].to_ascii_lowercase() == "px" {
+                        Some(Duration::from_millis(args[3]
+                            .parse::<u64>()
+                            .map_err(|_| Error::msg("value is not an integer or out of range"))?
+                        ))
+                    } else {
+                        bail!("syntax error")
+                    }
+                } else {
+                    None
+                };
+                let name = String::from(args[0]);
+
                 self.store
                     .lock()
                     .await
-                    .insert(args[0].into(), RedisType::String(args[1].into()));
+                    .insert(name.clone(), RedisType::String(args[1].into()));
+                if let Some(dur) = duration {
+                    self.spawn_expire(name, dur).await;
+                }
 
                 write_ok(stream).await
             }
