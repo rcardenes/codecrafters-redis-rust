@@ -26,12 +26,33 @@ impl RedisServer {
         }
     }
 
+    async fn handle_set(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        match args.len() {
+            2 => {
+                todo!()
+            }
+            _ => bail!("wrong number of arguments for 'set' command")
+        }
+    }
+
+    async fn handle_get(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        match args.len() {
+            1 => {
+                todo!()
+            },
+            _ => bail!("wrong number of arguments for 'get' command")
+        }
+    }
+
     async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
+        let args = &cmd_vec[1..];
         match name.to_ascii_lowercase().as_str() {
-            "ping" => { handle_ping(stream, &cmd_vec[1..]).await? }
-            "echo" => { handle_echo(stream, &cmd_vec[1..]).await? }
-            "hello" => { handle_hello(stream, &cmd_vec[1..]).await? }
+            "ping" => { handle_ping(stream, args).await? }
+            "echo" => { handle_echo(stream, args).await? }
+            "hello" => { handle_hello(stream, args).await? }
+            "set" => { self.handle_set(stream, args).await? }
+            "get" => { self.handle_get(stream, args).await? }
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
