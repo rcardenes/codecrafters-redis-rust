@@ -29,7 +29,14 @@ impl RedisServer {
     async fn handle_set(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
             2 => {
-                todo!()
+                self.store
+                    .lock()
+                    .unwrap()
+                    .insert(args[0].into(), RedisType::String(args[1].into()));
+
+                println!("SET {} : '{}'", args[0], args[1]);
+                println!("{:#?}", self.store);
+                write_ok(stream).await
             }
             _ => bail!("wrong number of arguments for 'set' command")
         }
@@ -65,6 +72,10 @@ impl RedisServer {
         }
         Ok(())
     }
+}
+
+async fn write_ok(stream: &mut TcpReader) -> Result<()> {
+    stream.write(b"+OK\r\n").await.map(|_| Ok(()))?
 }
 
 async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
