@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::string::ToString;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
 type TcpReader = BufReader<TcpStream>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RedisType {
     String(String),
     Int(i64),
@@ -31,11 +32,9 @@ impl RedisServer {
             2 => {
                 self.store
                     .lock()
-                    .unwrap()
+                    .await
                     .insert(args[0].into(), RedisType::String(args[1].into()));
 
-                println!("SET {} : '{}'", args[0], args[1]);
-                println!("{:#?}", self.store);
                 write_ok(stream).await
             }
             _ => bail!("wrong number of arguments for 'set' command")
@@ -45,7 +44,18 @@ impl RedisServer {
     async fn handle_get(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
             1 => {
-                todo!()
+                match self.store.lock().await.get(args[0].into()) {
+                    Some(RedisType::String(string)) => {
+                        write_string(stream, string).await
+                    }
+                    Some(RedisType::Int(number)) => {
+                        write_integer(stream, *number).await
+                    }
+                    Some(RedisType::Array(_)) => {
+                        write_wrongtype(stream).await
+                    }
+                    None => write_nil(stream).await
+                }
             },
             _ => bail!("wrong number of arguments for 'get' command")
         }
@@ -76,6 +86,15 @@ impl RedisServer {
 
 async fn write_ok(stream: &mut TcpReader) -> Result<()> {
     stream.write(b"+OK\r\n").await.map(|_| Ok(()))?
+}
+
+async fn write_nil(stream: &mut TcpReader) -> Result<()> {
+    stream.write(b"$-1\r\n").await.map(|_| Ok(()))?
+}
+
+async fn write_wrongtype(stream: &mut TcpReader) -> Result<()> {
+    stream.write(b"-WRONGTYPE Operation against a key holding the wrong kind of value")
+        .await.map(|_| Ok(()))?
 }
 
 async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
