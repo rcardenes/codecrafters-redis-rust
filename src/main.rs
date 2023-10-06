@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
 
 type TcpReader = BufReader<TcpStream>;
@@ -18,13 +18,13 @@ enum RedisType {
 
 #[derive(Clone)]
 struct RedisServer {
-    store: Arc<Mutex<HashMap<String, RedisType>>>,
+    store: Arc<RwLock<HashMap<String, RedisType>>>,
 }
 
 impl RedisServer {
     fn new() -> Self {
         Self {
-            store: Arc::new(Mutex::new(HashMap::new()))
+            store: Arc::new(RwLock::new(HashMap::new()))
         }
     }
 
@@ -33,7 +33,7 @@ impl RedisServer {
             let store = Arc::clone(&self.store);
             async move {
                 sleep(how_long).await;
-                store.lock().await.remove(&key);
+                store.write().await.remove(&key);
             }
         });
     }
@@ -56,7 +56,7 @@ impl RedisServer {
                 let name = String::from(args[0]);
 
                 self.store
-                    .lock()
+                    .write()
                     .await
                     .insert(name.clone(), RedisType::String(args[1].into()));
                 if let Some(dur) = duration {
@@ -72,7 +72,7 @@ impl RedisServer {
     async fn handle_get(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
             1 => {
-                match self.store.lock().await.get(args[0].into()) {
+                match self.store.read().await.get(args[0].into()) {
                     Some(RedisType::String(string)) => {
                         write_string(stream, string).await
                     }
