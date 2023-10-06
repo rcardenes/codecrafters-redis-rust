@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::env;
+use std::env::Args;
 use std::string::ToString;
 use std::sync::{Arc, OnceLock};
 use anyhow::{bail, Error, Result};
@@ -6,6 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
+
+use redis_starter_rust::config::Configuration;
 
 type TcpReader = BufReader<TcpStream>;
 
@@ -28,15 +32,15 @@ enum RedisType {
 struct RedisServer {
     store: Arc<RwLock<HashMap<String, RedisType>>>,
     expiry: Arc<RwLock<HashMap<String, Instant>>>,
-    config: Arc<HashMap<String, String>>,
+    config: Arc<RwLock<Configuration>>,
 }
 
 impl RedisServer {
-    fn new() -> Self {
+    fn new(config: Configuration) -> Self {
         Self {
             store: Arc::new(RwLock::new(HashMap::new())),
             expiry: Arc::new(RwLock::new(HashMap::new())),
-            config: Arc::new(HashMap::new()),
+            config: Arc::new(RwLock::new(config)),
         }
     }
 
@@ -135,7 +139,7 @@ impl RedisServer {
             _ => {
                 let mut values = vec![];
                 for arg in args.iter().map(|arg| arg.to_lowercase()) {
-                    if let Some(value) = self.config.get(&arg) {
+                    if let Some(value) = self.config.read().await.get(&arg) {
                         values.push(RedisType::String(arg));
                         values.push(RedisType::String(value.clone()));
                     }
@@ -169,8 +173,7 @@ impl RedisServer {
             "get" => self.handle_config_get(stream, &args[1..]).await?,
             "help" => self.handle_config_help(stream, &args[1..]).await?,
             _ => {
-                let msg = format!("unknown subcommand '{}'. Try CONFIG HELP", args[0]);
-                bail!(msg)
+                bail!("unknown subcommand '{}'. Try CONFIG HELP", args[0])
             }
         }
         Ok(())
@@ -192,8 +195,7 @@ impl RedisServer {
                     .map(|s| format!("'{}'", *s))
                     .collect::<Vec<_>>()
                     .join(" ");
-                let error_msg = format!("unknown command '{}', with args beginning with: {}", name, args);
-                bail!(error_msg)
+                bail!("unknown command '{}', with args beginning with: {}", name, args)
             }
         }
         Ok(())
@@ -405,14 +407,29 @@ fn init_static_data() {
     ])).unwrap();
 }
 
-const BINDING_ADDRESS: &str = "127.0.0.1:6379";
+fn parse_arguments(mut args: Args) -> Result<Vec<(String, String)>> {
+    let mut pairs = vec![];
+    let _ = args.next(); // Discard the 1st argument (binary path)
+    while let Some(arg) = args.next() {
+        if arg.starts_with("--") {
+            if let Some(value) = args.next() {
+                pairs.push(((&arg[2..]).to_string(), value));
+            } else {
+                bail!("No value for option {}", arg)
+            }
+        }
+    }
+    Ok(pairs)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init_static_data();
+    let mut config = Configuration::new();
+    config.bulk_update(parse_arguments(env::args())?)?;
 
-    let listener = TcpListener::bind(BINDING_ADDRESS).await?;
-    let server = RedisServer::new();
+    let listener = TcpListener::bind(config.get_binding_address()?).await?;
+    let server = RedisServer::new(config);
 
     loop {
         let (stream, addr) = listener.accept().await?;
