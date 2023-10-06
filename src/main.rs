@@ -9,6 +9,14 @@ use tokio::time::{Duration, Instant};
 
 type TcpReader = BufReader<TcpStream>;
 
+const HELP_LINES: [&str; 5] = [
+    "CONFIG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    "GET <pattern>",
+    "    Return parameters matching the glob-like <pattern> and their values.",
+    "HELP",
+    "    Prints this help."
+];
+
 #[derive(Debug, Clone)]
 enum RedisType {
     String(String),
@@ -20,13 +28,15 @@ enum RedisType {
 struct RedisServer {
     store: Arc<RwLock<HashMap<String, RedisType>>>,
     expiry: Arc<RwLock<HashMap<String, Instant>>>,
+    config: Arc<HashMap<String, String>>,
 }
 
 impl RedisServer {
     fn new() -> Self {
         Self {
             store: Arc::new(RwLock::new(HashMap::new())),
-            expiry: Arc::new(RwLock::new(HashMap::new()))
+            expiry: Arc::new(RwLock::new(HashMap::new())),
+            config: Arc::new(HashMap::new()),
         }
     }
 
@@ -97,7 +107,7 @@ impl RedisServer {
         }
     }
 
-    async fn handle_get(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+    async fn handle_get(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
             1 => {
                 match self.get(args[0]).await {
@@ -117,15 +127,65 @@ impl RedisServer {
         }
     }
 
+    async fn handle_config_get(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        match args.len() {
+            0 => {
+                bail!("wrong number of arguments for 'config|get' command")
+            }
+            _ => {
+                let mut values = vec![];
+                for arg in args.iter().map(|arg| arg.to_lowercase()) {
+                    if let Some(value) = self.config.get(&arg) {
+                        values.push(RedisType::String(arg));
+                        values.push(RedisType::String(value.clone()));
+                    }
+                }
+
+                RedisType::Array(values).write(stream).await
+            }
+        }
+    }
+
+    async fn handle_config_help(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        match args.len() {
+            0 => {
+                write_array_size(stream, HELP_LINES.len()).await?;
+                for arg in HELP_LINES {
+                    write_simple_string(stream, arg).await?;
+                }
+            }
+            _ => {
+                bail!("wrong number of arguments for 'config|help' command")
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_config(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        if args.len() == 0 {
+            bail!("wrong number of arguments for 'config' command")
+        }
+        match args[0].to_lowercase().as_str() {
+            "get" => self.handle_config_get(stream, &args[1..]).await?,
+            "help" => self.handle_config_help(stream, &args[1..]).await?,
+            _ => {
+                let msg = format!("unknown subcommand '{}'. Try CONFIG HELP", args[0]);
+                bail!(msg)
+            }
+        }
+        Ok(())
+    }
+
     async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
         match name.to_ascii_lowercase().as_str() {
-            "ping" => { handle_ping(stream, args).await? }
-            "echo" => { handle_echo(stream, args).await? }
-            "hello" => { handle_hello(stream, args).await? }
-            "set" => { self.handle_set(stream, args).await? }
-            "get" => { self.handle_get(stream, args).await? }
+            "ping" => handle_ping(stream, args).await?,
+            "echo" => handle_echo(stream, args).await?,
+            "hello" => handle_hello(stream, args).await?,
+            "set" => self.handle_set(stream, args).await?,
+            "get" => self.handle_get(stream, args).await?,
+            "config" => self.handle_config(stream, args).await?,
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
@@ -158,13 +218,18 @@ async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
     stream.write(output.as_bytes()).await.map(|_| Ok(()))?
 }
 
+async fn write_simple_string(stream: &mut TcpReader, string: &str) -> Result<()> {
+    let output = format!("+{string}\r\n");
+    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
+}
+
 async fn write_integer(stream: &mut TcpReader, number: i64) -> Result<()> {
     let output = format!(":{number}\r\n");
     stream.write(output.as_bytes()).await.map(|_| Ok(()))?
 }
 
-async fn write_array_size(stream: &mut TcpReader, array: &[RedisType]) -> Result<()> {
-    let size = format!("*{}\r\n", array.len());
+async fn write_array_size(stream: &mut TcpReader, size: usize) -> Result<()> {
+    let size = format!("*{size}\r\n",);
     stream.write(size.as_bytes()).await.map(|_| Ok(()))?
 }
 
@@ -178,13 +243,13 @@ impl RedisType {
                 write_integer(stream, *number).await?
             }
             RedisType::Array(array) => {
-                write_array_size(stream, array).await?;
+                write_array_size(stream, array.len()).await?;
                 let mut stack = vec![array.iter()];
                 while let Some(last) = stack.last_mut() {
                     if let Some(element) = last.next() {
                         match element {
                             RedisType::Array(array) => {
-                                write_array_size(stream, array).await?;
+                                write_array_size(stream, array.len()).await?;
                                 stack.push(array.iter())
                             },
                             // Duplicated code because async functions can't be recursive
