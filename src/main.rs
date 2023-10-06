@@ -5,7 +5,7 @@ use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant};
 
 type TcpReader = BufReader<TcpStream>;
 
@@ -19,26 +19,60 @@ enum RedisType {
 #[derive(Clone)]
 struct RedisServer {
     store: Arc<RwLock<HashMap<String, RedisType>>>,
+    expiry: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 impl RedisServer {
     fn new() -> Self {
         Self {
-            store: Arc::new(RwLock::new(HashMap::new()))
+            store: Arc::new(RwLock::new(HashMap::new())),
+            expiry: Arc::new(RwLock::new(HashMap::new()))
         }
     }
 
-    async fn spawn_expire(&mut self, key: String, how_long: Duration) {
-        tokio::spawn({
-            let store = Arc::clone(&self.store);
-            async move {
-                sleep(how_long).await;
-                store.write().await.remove(&key);
+    async fn write(&mut self, key: &str, value: RedisType, expire_at: Option<Instant>) {
+        let key = String::from(key);
+        {
+            let mut lock = self.expiry.write().await;
+            if let Some(instant) = expire_at {
+                lock.insert(key.clone(), instant);
+            } else {
+                lock.remove(&key);
             }
-        });
+        }
+        self.store.write().await.insert(key, value);
+    }
+
+    async fn try_expire(&self, key: &str) -> bool {
+        let mut remove = false;
+
+        {
+            if let Some(expiry) = self.expiry.read().await.get(key) {
+                if Instant::now() >= *expiry {
+                    remove = true;
+                }
+            }
+        }
+        if remove {
+            self.store.write().await.remove(key);
+            self.expiry.write().await.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn get(&self, key: &str) -> Option<RedisType> {
+        if self.try_expire(key).await {
+            // Shortcut return, as we just removed the key
+            return None;
+        }
+
+        self.store.read().await.get(key).map(|ref_val| ref_val.clone())
     }
 
     async fn handle_set(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        let now = Instant::now();
         match args.len() {
             2 | 4 => {
                 let duration = if args.len() == 4 {
@@ -54,14 +88,8 @@ impl RedisServer {
                     None
                 };
                 let name = String::from(args[0]);
-
-                self.store
-                    .write()
-                    .await
-                    .insert(name.clone(), RedisType::String(args[1].into()));
-                if let Some(dur) = duration {
-                    self.spawn_expire(name, dur).await;
-                }
+                let expiry = if let Some(dur) = duration { now.checked_add(dur) } else { None};
+                self.write(&name, RedisType::String(args[1].into()), expiry).await;
 
                 write_ok(stream).await
             }
@@ -72,12 +100,12 @@ impl RedisServer {
     async fn handle_get(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
         match args.len() {
             1 => {
-                match self.store.read().await.get(args[0].into()) {
+                match self.get(args[0]).await {
                     Some(RedisType::String(string)) => {
-                        write_string(stream, string).await
+                        write_string(stream, &string).await
                     }
                     Some(RedisType::Int(number)) => {
-                        write_integer(stream, *number).await
+                        write_integer(stream, number).await
                     }
                     Some(RedisType::Array(_)) => {
                         write_wrongtype(stream).await
