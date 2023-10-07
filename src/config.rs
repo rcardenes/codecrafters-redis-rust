@@ -21,15 +21,18 @@ impl Default for Configuration {
 }
 impl Configuration {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            store: HashMap::new()
+        }
     }
 
-    pub fn update(&mut self, key: String, value: String) -> Result<()> {
-        if !self.store.contains_key(key.as_str()) {
-            bail!("Attempting to set unknown config entry: {}", key)
+    pub fn update(&mut self, key: String, value: String) -> Result<String> {
+        if let Some(current) = self.store.remove(key.as_str()) {
+            self.store.insert(key, value);
+            Ok(current)
+        } else {
+            bail!("Attempting to set unknown config entry: '{}'", key)
         }
-        self.store.insert(key, value);
-        Ok(())
     }
 
     pub fn bulk_update(&mut self, pairs: Vec<(String, String)>) -> Result<()> {
@@ -49,5 +52,40 @@ impl Configuration {
         } else {
             bail!("Something is wrong with the configuration for the binding address. Missing default data")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{Configuration, DEFAULT_CONFIG};
+
+    #[test]
+    fn test_default_keys() {
+        let config = Configuration::default(); // Loaded with defaults
+
+        for (key, value) in DEFAULT_CONFIG {
+            assert_eq!(config.get(key), Some(String::from(value)));
+        }
+    }
+
+    #[test]
+    fn test_update_existing_key() {
+        let mut config = Configuration::default();
+        let key = String::from("dbfilename");
+        let prev = config.get(&key).unwrap();
+        let new = String::from("new_stuff");
+
+        match config.update(key.clone(), new.clone()) {
+            Ok(value) => assert_eq!(value, prev),
+            Err(error) => panic!("{}", error),
+        }
+        assert_eq!(config.get(&key), Some(new));
+    }
+
+    #[test]
+    fn test_update_wrong_key() {
+        let mut config = Configuration::default();
+
+        assert!(config.update(String::from("foo"), String::from("bar")).is_err());
     }
 }

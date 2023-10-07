@@ -425,7 +425,7 @@ fn parse_arguments(mut args: Args) -> Result<Vec<(String, String)>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_static_data();
-    let mut config = Configuration::new();
+    let mut config = Configuration::default();
     config.bulk_update(parse_arguments(env::args())?)?;
 
     let listener = TcpListener::bind(config.get_binding_address()?).await?;
@@ -440,4 +440,3 @@ async fn main() -> Result<()> {
         });
     };
 }
-
