@@ -355,9 +355,12 @@ async fn main() -> Result<()> {
     let mut server = RedisServer::new(config);
 
     if let Ok(db_path) = db_path {
-        let mut rdb = Rdb::open(db_path.as_path()).await?;
-        while let Some(entry) = rdb.read_next_entry().await? {
-            server.write(&entry.key, entry.value, entry.expires).await;
+        if let Ok(mut rdb) = Rdb::open(db_path.as_path()).await {
+            while let Some(entry) = rdb.read_next_entry().await? {
+                server.write(&entry.key, entry.value, entry.expires).await;
+            }
+        } else {
+            eprintln!("Couldn't open database at {}", db_path.to_string_lossy());
         }
     }
 
