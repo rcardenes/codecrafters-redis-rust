@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::time::Duration;
 
 use redis_starter_rust::config::Configuration;
@@ -53,29 +53,28 @@ impl RedisServer {
         self.store.write().await.insert(key, value);
     }
 
-    async fn try_expire(&self, key: &str) -> bool {
-        let mut remove = false;
-
+    async fn try_expire(&self, key: &str, expiry_hash: &mut RwLockWriteGuard<'_, HashMap<String, SystemTime>>) -> bool {
         {
-            if let Some(expiry) = self.expiry.read().await.get(key) {
+            if let Some(expiry) = expiry_hash.get(key) {
                 if SystemTime::now() >= *expiry {
-                    remove = true;
+                    if let Ok(mut guard) = self.store.try_write() {
+                        guard.remove(key);
+                        expiry_hash.remove(key);
+                    }
+                    return true
                 }
             }
         }
-        if remove {
-            self.store.write().await.remove(key);
-            self.expiry.write().await.remove(key);
-            true
-        } else {
-            false
-        }
+
+        false
     }
 
     async fn get(&self, key: &str) -> Option<RedisType> {
-        if self.try_expire(key).await {
-            // Shortcut return, as we just removed the key
-            return None;
+        {
+            if self.try_expire(key, &mut self.expiry.write().await).await {
+                // Shortcut return, as we just removed the key
+                return None;
+            }
         }
 
         self.store.read().await.get(key).map(|ref_val| ref_val.clone())
@@ -175,6 +174,44 @@ impl RedisServer {
         Ok(())
     }
 
+    async fn handle_keys(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        if args.len() != 1 {
+            bail!("wrong number of arguments for 'keys' command")
+        }
+        match args[0] {
+            "*" => {
+                let store = self.store.read().await;
+                let mut acc = vec![];
+
+                {
+                    let mut expiry = self.expiry.write().await;
+                    for key in store.keys() {
+                        if !self.try_expire(key, &mut expiry).await {
+                            acc.push(key);
+                        }
+                    }
+                }
+
+                write_array_size(stream, acc.len()).await?;
+                for key in acc {
+                    write_string(stream, key).await?;
+                }
+            }
+            other => {
+                if other.contains("*") {
+                    bail!("general pattern matching unsupported")
+                }
+
+                let mut acc = vec![];
+                if self.store.read().await.contains_key(other) {
+                    acc.push(RedisType::String(other.into()));
+                }
+                RedisType::Array(acc).write(stream).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
@@ -185,6 +222,7 @@ impl RedisServer {
             "set" => self.handle_set(stream, args).await?,
             "get" => self.handle_get(stream, args).await?,
             "config" => self.handle_config(stream, args).await?,
+            "keys" => self.handle_keys(stream, args).await?,
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
