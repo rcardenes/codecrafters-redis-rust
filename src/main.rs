@@ -3,15 +3,18 @@ use std::env;
 use std::env::Args;
 use std::string::ToString;
 use std::sync::{Arc, OnceLock};
+use std::time::SystemTime;
 use anyhow::{bail, Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use redis_starter_rust::config::Configuration;
-
-type TcpReader = BufReader<TcpStream>;
+use redis_starter_rust::io::*;
+use redis_starter_rust::rdb::Rdb;
+use redis_starter_rust::TcpReader;
+use redis_starter_rust::types::RedisType;
 
 const HELP_LINES: [&str; 5] = [
     "CONFIG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -21,17 +24,10 @@ const HELP_LINES: [&str; 5] = [
     "    Prints this help."
 ];
 
-#[derive(Debug, Clone)]
-enum RedisType {
-    String(String),
-    Int(i64),
-    Array(Vec<RedisType>),
-}
-
 #[derive(Clone)]
 struct RedisServer {
     store: Arc<RwLock<HashMap<String, RedisType>>>,
-    expiry: Arc<RwLock<HashMap<String, Instant>>>,
+    expiry: Arc<RwLock<HashMap<String, SystemTime>>>,
     config: Arc<RwLock<Configuration>>,
 }
 
@@ -44,7 +40,7 @@ impl RedisServer {
         }
     }
 
-    async fn write(&mut self, key: &str, value: RedisType, expire_at: Option<Instant>) {
+    async fn write(&mut self, key: &str, value: RedisType, expire_at: Option<SystemTime>) {
         let key = String::from(key);
         {
             let mut lock = self.expiry.write().await;
@@ -62,7 +58,7 @@ impl RedisServer {
 
         {
             if let Some(expiry) = self.expiry.read().await.get(key) {
-                if Instant::now() >= *expiry {
+                if SystemTime::now() >= *expiry {
                     remove = true;
                 }
             }
@@ -86,7 +82,7 @@ impl RedisServer {
     }
 
     async fn handle_set(&mut self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
-        let now = Instant::now();
+        let now = SystemTime::now();
         match args.len() {
             2 | 4 => {
                 let duration = if args.len() == 4 {
@@ -201,80 +197,6 @@ impl RedisServer {
         Ok(())
     }
 }
-
-async fn write_ok(stream: &mut TcpReader) -> Result<()> {
-    stream.write(b"+OK\r\n").await.map(|_| Ok(()))?
-}
-
-async fn write_nil(stream: &mut TcpReader) -> Result<()> {
-    stream.write(b"$-1\r\n").await.map(|_| Ok(()))?
-}
-
-async fn write_wrongtype(stream: &mut TcpReader) -> Result<()> {
-    stream.write(b"-WRONGTYPE Operation against a key holding the wrong kind of value")
-        .await.map(|_| Ok(()))?
-}
-
-async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
-    let output = format!("${}\r\n{}\r\n", string.len(), string);
-    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
-}
-
-async fn write_simple_string(stream: &mut TcpReader, string: &str) -> Result<()> {
-    let output = format!("+{string}\r\n");
-    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
-}
-
-async fn write_integer(stream: &mut TcpReader, number: i64) -> Result<()> {
-    let output = format!(":{number}\r\n");
-    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
-}
-
-async fn write_array_size(stream: &mut TcpReader, size: usize) -> Result<()> {
-    let size = format!("*{size}\r\n",);
-    stream.write(size.as_bytes()).await.map(|_| Ok(()))?
-}
-
-impl RedisType {
-    async fn write(&self, stream: &mut TcpReader) -> Result<()> {
-        match &self {
-            RedisType::String(string) => {
-                write_string(stream, string).await?
-            }
-            RedisType::Int(number) => {
-                write_integer(stream, *number).await?
-            }
-            RedisType::Array(array) => {
-                write_array_size(stream, array.len()).await?;
-                let mut stack = vec![array.iter()];
-                while let Some(last) = stack.last_mut() {
-                    if let Some(element) = last.next() {
-                        match element {
-                            RedisType::Array(array) => {
-                                write_array_size(stream, array.len()).await?;
-                                stack.push(array.iter())
-                            },
-                            // Duplicated code because async functions can't be recursive
-                            // as-is. There ways to circumvent this, but they are a pain
-                            // in the ass or require the use of crates not provided by the
-                            // project (and CodeCrafters don't support modifying Cargo.toml
-                            RedisType::String(string) => {
-                                write_string(stream, string).await?
-                            },
-                            RedisType::Int(number) => {
-                                write_integer(stream, *number).await?
-                            }
-                        }
-                    } else {
-                        stack.pop();
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 static HELLO_INFO: OnceLock<RedisType> = OnceLock::new();
 
 /// Respond to a PING command
@@ -427,9 +349,17 @@ async fn main() -> Result<()> {
     init_static_data();
     let mut config = Configuration::default();
     config.bulk_update(parse_arguments(env::args())?)?;
+    let db_path = config.get_database_path();
 
     let listener = TcpListener::bind(config.get_binding_address()?).await?;
-    let server = RedisServer::new(config);
+    let mut server = RedisServer::new(config);
+
+    if let Ok(db_path) = db_path {
+        let mut rdb = Rdb::open(db_path.as_path()).await?;
+        while let Some(entry) = rdb.read_next_entry().await? {
+            server.write(&entry.key, entry.value, entry.expires).await;
+        }
+    }
 
     loop {
         let (stream, addr) = listener.accept().await?;

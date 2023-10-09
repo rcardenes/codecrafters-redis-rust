@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 const DEFAULT_CONFIG: [(&str, &str); 4] = [
     ("bind-source-addr", "127.0.0.1"), // "" in the original, but I decided to translate it already
@@ -52,6 +53,13 @@ impl Configuration {
         } else {
             bail!("Something is wrong with the configuration for the binding address. Missing default data")
         }
+    }
+
+    pub fn get_database_path(&self) -> Result<PathBuf> {
+        let mut data_dir = PathBuf::from(self.get("dir").unwrap());
+        data_dir.push(PathBuf::from(self.get("dbfilename").unwrap()).as_path());
+
+        Ok(data_dir)
     }
 }
 
