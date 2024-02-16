@@ -9,9 +9,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::time::Duration;
+use itertools::Itertools;
 
 use redis_starter_rust::config::Configuration;
 use redis_starter_rust::io::*;
+use redis_starter_rust::info;
 use redis_starter_rust::rdb::Rdb;
 use redis_starter_rust::TcpReader;
 use redis_starter_rust::types::RedisType;
@@ -212,6 +214,27 @@ impl RedisServer {
         Ok(())
     }
 
+    async fn handle_info(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        let info = if args.len() == 0 {
+            info::all_info() + "\r\n"
+        } else {
+            let section = args
+                .iter()
+                .map(|s| s.to_lowercase())
+                .unique()
+                .map(|s| info::info_on(&s))
+                .join("\r\n");
+
+            if section.len() > 0 {
+                section + "\r\n"
+            } else {
+                String::from("")
+            }
+        };
+        write_string(stream, info.as_str()).await?;
+        Ok(())
+    }
+
     async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
@@ -223,6 +246,7 @@ impl RedisServer {
             "get" => self.handle_get(stream, args).await?,
             "config" => self.handle_config(stream, args).await?,
             "keys" => self.handle_keys(stream, args).await?,
+            "info" => self.handle_info(stream, args).await?,
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
