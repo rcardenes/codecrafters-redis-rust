@@ -2,7 +2,15 @@ use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const DEFAULT_CONFIG: [(&str, &str); 4] = [
+const ACCEPTABLE_KEYS: &[&str] = &[
+    "bind-source-addr",
+    "dbfilename",
+    "dir",
+    "port",
+    "replicaof",
+];
+
+const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("bind-source-addr", "127.0.0.1"), // "" in the original, but I decided to translate it already
     ("dbfilename", "dump.rdb"),
     ("dir", "."),
@@ -16,7 +24,7 @@ pub struct Configuration {
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            store: DEFAULT_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+            store: DEFAULT_CONFIG.iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect()
         }
     }
 }
@@ -27,8 +35,9 @@ impl Configuration {
         }
     }
 
-    pub fn update(&mut self, key: String, value: String) -> Result<String> {
-        if let Some(current) = self.store.remove(key.as_str()) {
+    pub fn update(&mut self, key: String, value: String) -> Result<Option<String>> {
+        if ACCEPTABLE_KEYS.contains(&key.as_str()) {
+            let current = self.store.remove(key.as_str());
             self.store.insert(key, value);
             Ok(current)
         } else {
@@ -61,6 +70,10 @@ impl Configuration {
 
         Ok(data_dir)
     }
+
+    pub fn as_hash(&self) -> HashMap<String, String> {
+        self.store.clone()
+    }
 }
 
 #[cfg(test)]
@@ -71,7 +84,7 @@ mod tests {
     fn test_default_keys() {
         let config = Configuration::default(); // Loaded with defaults
 
-        for (key, value) in DEFAULT_CONFIG {
+        for &(key, value) in DEFAULT_CONFIG {
             assert_eq!(config.get(key), Some(String::from(value)));
         }
     }
@@ -84,8 +97,9 @@ mod tests {
         let new = String::from("new_stuff");
 
         match config.update(key.clone(), new.clone()) {
-            Ok(value) => assert_eq!(value, prev),
+            Ok(Some(value)) => assert_eq!(value, prev),
             Err(error) => panic!("{}", error),
+            _ => panic!("Unexpected value"),
         }
         assert_eq!(config.get(&key), Some(new));
     }

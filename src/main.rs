@@ -215,14 +215,16 @@ impl RedisServer {
     }
 
     async fn handle_info(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        let config = self.config.read().await.as_hash();
+
         let info = if args.len() == 0 {
-            info::all_info() + "\r\n"
+            info::all_info(&config) + "\r\n"
         } else {
             let section = args
                 .iter()
                 .map(|s| s.to_lowercase())
                 .unique()
-                .map(|s| info::info_on(&s))
+                .map(|s| info::info_on(&config, &s))
                 .join("\r\n");
 
             if section.len() > 0 {
@@ -396,7 +398,16 @@ fn parse_arguments(mut args: Args) -> Result<Vec<(String, String)>> {
     let _ = args.next(); // Discard the 1st argument (binary path)
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
-            if let Some(value) = args.next() {
+            if arg == "--replicaof" {
+                let ip = args.next();
+                let port = args.next();
+                match (ip, port) {
+                    (Some(ip), Some(port)) => {
+                        pairs.push(((&arg[2..]).to_string(), format!("{ip}:{port}")));
+                    },
+                    _ => bail!("--replicaof: Wrong number of arguments")
+                }
+            } else if let Some(value) = args.next() {
                 pairs.push(((&arg[2..]).to_string(), value));
             } else {
                 bail!("No value for option {}", arg)
