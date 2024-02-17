@@ -1,26 +1,28 @@
-use std::collections::HashMap;
+use crate::config::Configuration;
 
 const SEPARATOR: &str = "\r\n";
 const SECTIONS: &[(&str, &str)] = &[
     ("replication", "Replication"),
 ];
 
-pub fn info_on(config: &HashMap::<String, String>, section: &str) -> String {
+pub fn info_on(config: &Configuration, section: &str) -> String {
     if section == "replication" {
-        let is_replica = config.contains_key("replicaof");
+        let is_replica = config.get("replicaof").is_some();
+        let repl_info = config.replica_info();
 
         vec![
-            "# Replication",
-            if !is_replica { "role:master" } else { "role:slave" },
-            "connected_slaves:0",
+            String::from("# Replication"),
+            String::from(if !is_replica { "role:master" } else { "role:slave" }),
+            String::from("connected_slaves:0"),
+            format!("master_replid:{}", repl_info.digest_string()),
+            format!("master_repl_offset:{}", repl_info.offset()),
         ]
     } else {
         vec![]
     }.join(SEPARATOR)
-    .to_owned()
 }
 
-pub fn all_info(config: &HashMap::<String, String>) -> String {
+pub fn all_info(config: &Configuration) -> String {
     let mut tmp: Vec<String> = vec![];
 
     for &(key, _name) in SECTIONS.iter() {

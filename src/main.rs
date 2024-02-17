@@ -215,7 +215,7 @@ impl RedisServer {
     }
 
     async fn handle_info(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
-        let config = self.config.read().await.as_hash();
+        let config = self.config.read().await;
 
         let info = if args.len() == 0 {
             info::all_info(&config) + "\r\n"
