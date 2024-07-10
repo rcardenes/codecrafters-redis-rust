@@ -82,6 +82,10 @@ impl Configuration {
         self.store.clone()
     }
 
+    pub fn is_replica(&self) -> bool {
+        self.get("replicaof").is_some()
+    }
+
     pub fn replica_info(&self) -> &ReplicaInfo {
         &self.replica
     }

@@ -2,25 +2,14 @@ use std::env::{self, Args};
 use std::string::ToString;
 use anyhow::{bail, Error, Result};
 use itertools::Itertools;
-use redis_starter_rust::client::replica_loop;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+use redis_starter_rust::{get_string, TcpReader};
 use redis_starter_rust::config::Configuration;
 use redis_starter_rust::rdb::Rdb;
-use redis_starter_rust::TcpReader;
+use redis_starter_rust::replica::replica_setup;
 use redis_starter_rust::server::{self, RedisServer};
-
-async fn get_string(stream: &mut TcpReader) -> Result<Option<String>> {
-    let mut buf = String::new();
-    let read_chars = stream.read_line(&mut buf).await?;
-
-    if read_chars == 0 {
-        Ok(None)
-    } else {
-        Ok(Some((&buf[0..read_chars -2]).to_string()))
-    }
-}
 
 type Command = Vec<String>;
 
@@ -136,19 +125,22 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(config.get_binding_address()?).await?;
     let mut server = RedisServer::new(config.clone());
 
-    if let Ok(db_path) = db_path {
-        if let Ok(mut rdb) = Rdb::open(db_path.as_path()).await {
-            while let Some(entry) = rdb.read_next_entry().await? {
-                server.write(&entry.key, entry.value, entry.expires).await;
+    // Don't read from the Rdb file if this is a replica
+    if !config.is_replica() {
+        if let Ok(db_path) = db_path {
+            if let Ok(mut rdb) = Rdb::open(db_path.as_path()).await {
+                while let Some(entry) = rdb.read_next_entry().await? {
+                    server.write(&entry.key, entry.value, entry.expires).await;
+                }
+            } else {
+                eprintln!("Couldn't open database at {}", db_path.to_string_lossy());
             }
-        } else {
-            eprintln!("Couldn't open database at {}", db_path.to_string_lossy());
         }
     }
 
     if let Some(address) = config.get("replicaof") {
         tokio::spawn(async move {
-            replica_loop(address, &config).await;
+            replica_setup(address, &config).await;
         });
     }
 

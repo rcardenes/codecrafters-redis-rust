@@ -50,3 +50,14 @@ impl RedisType {
     }
 }
 
+impl From<&str> for RedisType {
+    fn from(value: &str) -> Self {
+        RedisType::String(String::from(value))
+    }
+}
+
+impl From<String> for RedisType {
+    fn from(value: String) -> Self {
+        RedisType::String(value)
+    }
+}
