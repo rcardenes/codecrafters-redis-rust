@@ -11,8 +11,13 @@ pub async fn write_nil(stream: &mut TcpReader) -> Result<()> {
 }
 
 pub async fn write_wrongtype(stream: &mut TcpReader) -> Result<()> {
-    stream.write(b"-WRONGTYPE Operation against a key holding the wrong kind of value")
+    stream.write(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
         .await.map(|_| Ok(()))?
+}
+
+pub async fn write_simple_error(stream: &mut TcpReader, message: &str) -> Result<()> {
+    let output = format!("-{message}\r\n");
+    stream.write(output.as_bytes()).await.map(|_| Ok(()))?
 }
 
 pub async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {

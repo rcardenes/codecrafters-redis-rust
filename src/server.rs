@@ -285,6 +285,16 @@ impl RedisServer {
         write_simple_string(stream, "OK").await
     }
 
+    async fn handle_psync(&self, stream: &mut TcpReader, args: &[&str]) -> Result<()> {
+        if args != &["?", "-1"] {
+            write_simple_error(stream, "ERR Unsupported PSYNC arguments").await?;
+            bail!("wrong arguments for PSYNC");
+        }
+
+        let id = self.config.read().await.replica_info().digest_string();
+        write_simple_string(stream, &format!("FULLRESYNC {id} 0")).await
+    }
+
     pub async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
@@ -298,6 +308,7 @@ impl RedisServer {
             "keys" => self.handle_keys(stream, args).await?,
             "info" => self.handle_info(stream, args).await?,
             "replconf" => self.handle_replconf(stream, args).await?,
+            "psync" => self.handle_psync(stream, args).await?,
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
