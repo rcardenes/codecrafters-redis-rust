@@ -8,5 +8,6 @@ pub mod io;
 pub mod info;
 pub mod server;
 pub mod replica;
+pub mod client;
 
 pub type TcpReader = BufReader<TcpStream>;

@@ -1,5 +1,6 @@
 use sha1::{Sha1, Digest};
 
+#[derive(Clone)]
 pub struct ReplicaInfo {
     hasher: Sha1,
     offset: usize,

@@ -10,6 +10,7 @@ const ACCEPTABLE_KEYS: &[&str] = &[
     "dir",
     "port",
     "replicaof",
+    "master_replid",
 ];
 
 const DEFAULT_CONFIG: &[(&str, &str)] = &[
@@ -19,6 +20,7 @@ const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("port", "6379"),
 ];
 
+#[derive(Clone)]
 pub struct Configuration {
     store: HashMap<String, String>,
     replica: ReplicaInfo,

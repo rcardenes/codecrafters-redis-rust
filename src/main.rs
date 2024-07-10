@@ -2,6 +2,7 @@ use std::env::{self, Args};
 use std::string::ToString;
 use anyhow::{bail, Error, Result};
 use itertools::Itertools;
+use redis_starter_rust::client::replica_loop;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -129,10 +130,11 @@ async fn main() -> Result<()> {
     server::init_static_data();
     let mut config = Configuration::default();
     config.bulk_update(parse_arguments(env::args())?)?;
+
     let db_path = config.get_database_path();
 
     let listener = TcpListener::bind(config.get_binding_address()?).await?;
-    let mut server = RedisServer::new(config);
+    let mut server = RedisServer::new(config.clone());
 
     if let Ok(db_path) = db_path {
         if let Ok(mut rdb) = Rdb::open(db_path.as_path()).await {
@@ -142,6 +144,12 @@ async fn main() -> Result<()> {
         } else {
             eprintln!("Couldn't open database at {}", db_path.to_string_lossy());
         }
+    }
+
+    if let Some(address) = config.get("replicaof") {
+        tokio::spawn(async move {
+            replica_loop(address, &config).await;
+        });
     }
 
     loop {
