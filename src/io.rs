@@ -25,6 +25,12 @@ pub async fn write_string(stream: &mut TcpReader, string: &str) -> Result<()> {
     stream.write(output.as_bytes()).await.map(|_| Ok(()))?
 }
 
+pub async fn write_bytes(stream: &mut TcpReader, bytes: &[u8]) -> Result<()> {
+    let length = format!("${}\r\n", bytes.len());
+    stream.write(length.as_bytes()).await?;
+    stream.write(bytes).await.map(|_| Ok(()))?
+}
+
 pub async fn write_simple_string(stream: &mut TcpReader, string: &str) -> Result<()> {
     let output = format!("+{string}\r\n");
     stream.write(output.as_bytes()).await.map(|_| Ok(()))?

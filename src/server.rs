@@ -292,7 +292,11 @@ impl RedisServer {
         }
 
         let id = self.config.read().await.replica_info().digest_string();
-        write_simple_string(stream, &format!("FULLRESYNC {id} 0")).await
+        write_simple_string(stream, &format!("FULLRESYNC {id} 0")).await?;
+        // Empty RDB transfer for the time being. The file was generated using
+        // the official Redis server.
+        let empty_rdb = b"REDIS0010\xfa\tredis-ver\x067.0.11\xfa\nredis-bits\xc0@\xfa\x05ctime\xc2\xc4\xcf\x8ef\xfa\x08used-mem\xc2\xf0\xdf\x12\x00\xfa\x0erepl-stream-db\xc0\x00\xfa\x07repl-id(d784536f43b93857ad3b55d53d84a53b05dc3709\xfa\x0brepl-offset\xc0\x00\xfa\x08aof-base\xc0\x00\xff\x06\xd0\x8b\xb5\x939j`";
+        write_bytes(stream, empty_rdb).await
     }
 
     pub async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
