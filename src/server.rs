@@ -280,6 +280,11 @@ impl RedisServer {
         Ok(())
     }
 
+    async fn handle_replconf(&self, stream: &mut TcpReader, _: &[&str]) -> Result<()> {
+        // Trivial implementation. We're ignoring all the REPLCONF details for now
+        write_simple_string(stream, "OK").await
+    }
+
     pub async fn dispatch(&mut self, stream: &mut TcpReader, cmd_vec: &[&str]) -> Result<()> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
@@ -292,6 +297,7 @@ impl RedisServer {
             "config" => self.handle_config(stream, args).await?,
             "keys" => self.handle_keys(stream, args).await?,
             "info" => self.handle_info(stream, args).await?,
+            "replconf" => self.handle_replconf(stream, args).await?,
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
