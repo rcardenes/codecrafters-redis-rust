@@ -84,14 +84,36 @@ async fn send_replconf(stream: &mut TcpReader, config: &Configuration) -> Result
     Ok(())
 }
 
+async fn send_psync(stream: &mut TcpReader) -> Result<()> {
+    let cmd = RedisType::Array(vec![
+                    RedisType::from("PSYNC"),
+                    RedisType::from("?"),
+                    RedisType::from("-1"),
+    ]);
+
+    cmd.write(stream).await?;
+    match timeout(TIMEOUT, get_string(stream)).await {
+        Ok(Ok(Some(s))) => if s != "+OK" { bail !("expected OK at initial PSYNC") },
+        Ok(Err(_)) => eprintln!("Error when reading the answer PSYNC"),
+        Err(_) => eprintln!("Timeout when waiting for an answer for PSYNC"),
+        _ => {},
+    }
+
+    Ok(())
+}
+
 async fn handshake(stream: &mut TcpReader, config: &Configuration) -> Result<()> {
     if let Err(error) = ping(stream).await {
         eprintln!("Replica handshake error at PING: {error}");
-        bail!("Error at handshake");
+        bail!("Error during handshake");
     }
     if let Err(error) = send_replconf(stream, config).await {
         eprintln!("Replica handshake error at REPLCONF: {error}");
-        bail!("Error at handshake");
+        bail!("Error during handshake");
+    }
+    if let Err(error) = send_psync(stream).await {
+        eprintln!("Replica handshake error at PSYNC: {error}");
+        bail!("Error during handshake");
     }
 
     Ok(())
