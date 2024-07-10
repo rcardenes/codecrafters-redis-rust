@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::replica::ReplicaInfo;
+
 const ACCEPTABLE_KEYS: &[&str] = &[
     "bind-source-addr",
     "dbfilename",
@@ -18,20 +20,23 @@ const DEFAULT_CONFIG: &[(&str, &str)] = &[
 ];
 
 pub struct Configuration {
-    store: HashMap<String, String>
+    store: HashMap<String, String>,
+    replica: ReplicaInfo,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            store: DEFAULT_CONFIG.iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect()
+            store: DEFAULT_CONFIG.iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect(),
+            replica: ReplicaInfo::new(),
         }
     }
 }
 impl Configuration {
     pub fn new() -> Self {
         Self {
-            store: HashMap::new()
+            store: HashMap::new(),
+            replica: ReplicaInfo::new(),
         }
     }
 
@@ -73,6 +78,10 @@ impl Configuration {
 
     pub fn as_hash(&self) -> HashMap<String, String> {
         self.store.clone()
+    }
+
+    pub fn replica_info(&self) -> &ReplicaInfo {
+        &self.replica
     }
 }
 

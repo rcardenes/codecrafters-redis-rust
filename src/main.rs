@@ -10,7 +10,6 @@ use redis_starter_rust::rdb::Rdb;
 use redis_starter_rust::TcpReader;
 use redis_starter_rust::server::{self, RedisServer};
 
-
 async fn get_string(stream: &mut TcpReader) -> Result<Option<String>> {
     let mut buf = String::new();
     let read_chars = stream.read_line(&mut buf).await?;
