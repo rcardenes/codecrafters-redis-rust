@@ -12,7 +12,7 @@ pub enum RedisType {
 
 impl RedisType {
     pub async fn write(&self, stream: &mut TcpReader) -> Result<()> {
-        match &self {
+        match self {
             RedisType::String(string) => {
                 write_string(stream, string).await?
             }
@@ -38,7 +38,7 @@ impl RedisType {
                             },
                             RedisType::Int(number) => {
                                 write_integer(stream, *number).await?
-                            }
+                            },
                         }
                     } else {
                         stack.pop();

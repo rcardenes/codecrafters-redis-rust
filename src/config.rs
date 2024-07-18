@@ -1,8 +1,14 @@
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tokio::sync::mpsc::{Sender, Receiver};
 
-use crate::replica::ReplicaInfo;
+use crate::{
+    info,
+    replica::ReplicaInfo
+};
+
+pub const CMD_BUFFER: usize = 32;
 
 const ACCEPTABLE_KEYS: &[&str] = &[
     "bind-source-addr",
@@ -19,6 +25,13 @@ const DEFAULT_CONFIG: &[(&str, &str)] = &[
     ("dir", "."),
     ("port", "6379"),
 ];
+
+pub enum ConfigCommand {
+    Get { tx: Sender<Vec<String>>, items: Vec<String> },
+    AllInfo(Sender<String>),
+    InfoOn { tx: Sender<Vec<String>>, sections: Vec<String> },
+    RepicaDigest(Sender<String>),
+}
 
 #[derive(Clone)]
 pub struct Configuration {
@@ -88,6 +101,34 @@ impl Configuration {
 
     pub fn replica_info(&self) -> &ReplicaInfo {
         &self.replica
+    }
+}
+
+pub async fn config_loop(config: Configuration, mut rx: Receiver<ConfigCommand>) {
+    loop {
+        if let Some(cmd) = rx.recv().await {
+            match cmd {
+                ConfigCommand::Get { tx, items } => {
+                    let values = items.into_iter()
+                        .map(|arg| config.get(&arg).and_then(|val| Some(vec![arg, val])))
+                        .flatten()
+                        .flatten()
+                        .collect();
+                    tx.send(values).await.unwrap();
+                }
+                ConfigCommand::AllInfo(tx) => {
+                    tx.send(info::all_info(&config)).await.unwrap();
+                }
+                ConfigCommand::InfoOn { tx, sections } => {
+                    tx.send(sections.into_iter()
+                                    .map(|sec| info::info_on(&config, sec.as_str()))
+                                    .collect()).await.unwrap();
+                }
+                ConfigCommand::RepicaDigest(tx) => {
+                    tx.send(config.replica_info().digest_string()).await.unwrap();
+                }
+            }
+        }
     }
 }
 
