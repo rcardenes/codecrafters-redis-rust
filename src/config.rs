@@ -114,18 +114,18 @@ pub async fn config_loop(config: Configuration, mut rx: mpsc::Receiver<ConfigCom
                         .flatten()
                         .flatten()
                         .collect();
-                    tx.send(values).await.unwrap();
+                    tx.send(values).unwrap();
                 }
                 ConfigCommand::AllInfo(tx) => {
-                    tx.send(info::all_info(&config)).await.unwrap();
+                    tx.send(info::all_info(&config)).unwrap();
                 }
                 ConfigCommand::InfoOn { tx, sections } => {
                     tx.send(sections.into_iter()
                                     .map(|sec| info::info_on(&config, sec.as_str()))
-                                    .collect()).await.unwrap();
+                                    .collect()).unwrap();
                 }
                 ConfigCommand::ReplicaDigest(tx) => {
-                    tx.send(config.replica_info().digest_string()).await.unwrap();
+                    tx.send(config.replica_info().digest_string()).unwrap();
                 }
             }
         }

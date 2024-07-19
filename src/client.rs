@@ -6,19 +6,15 @@ use itertools::Itertools;
 use tokio::{
     sync::mpsc::{Receiver, Sender, self},
     sync::oneshot,
-    io::{AsyncReadExt, AsyncWriteExt, BufReader}, net::TcpStream,
+    io::{AsyncWriteExt, BufReader}, net::TcpStream,
 };
 
 use crate::{
-    get_string,
     io::*,
     store::{CommandResponse, StoreCommand},
     config::ConfigCommand,
     types::RedisType,
-    TcpReader
 };
-
-type Command = Vec<String>;
 
 const CLIENT_BUFFER: usize = 32;
 static HELLO_INFO: OnceLock<RedisType> = OnceLock::new();
@@ -48,51 +44,6 @@ pub fn init_static_data() {
     ])).unwrap();
 }
 
-
-async fn read_bulk_string(stream: &mut TcpReader) -> Result<Option<String>> {
-    fn format_error<'a>(chr: char) -> String {
-        format!("Protocol error: expected '$', got '{}'", chr)
-    }
-
-    if let Some(size_string) = get_string(stream).await? {
-        if size_string.is_empty() {
-            bail!(format_error(' '))
-        } else if !size_string.starts_with("$") {
-            bail!(format_error(size_string.chars().next().unwrap()))
-        } else {
-            let string_size = size_string[1..].parse::<usize>()
-                .map_err(|_| Error::msg("Protocol error: invalid bulk length"))?;
-            let mut buf: Vec<u8> = vec![0; string_size + 2];
-            stream.read_exact(buf.as_mut_slice()).await?;
-            let bulk_string = String::from_utf8_lossy(&buf[..string_size]).to_string();
-            Ok(Some(bulk_string))
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-async fn read_command(stream: &mut TcpReader) -> Result<Option<Command>> {
-    if let Some(text) = get_string(stream).await? {
-        if text.starts_with("*") {
-            let chunks = text[1..].parse::<usize>()
-                .map_err(|_| Error::msg("Protocol error: invalid multibulk length"))?;
-            let mut cmd = Command::new();
-            for _ in 0..chunks {
-                if let Some(cmd_part) = read_bulk_string(stream).await? {
-                    cmd.push(cmd_part);
-                } else {
-                    return Ok(None)
-                }
-            }
-            Ok(Some(cmd))
-        } else {
-            Ok(Some(text.split_whitespace().map(|s| s.to_string()).collect()))
-        }
-    } else {
-        Ok(None)
-    }
-}
 
 struct Client {
     id: usize,
@@ -360,7 +311,7 @@ impl Client {
 }
 
 
-async fn replica_loop(mut client: Client) {
+async fn client_replica_loop(mut client: Client) {
     let mut replica_rx = client.handle_psync().await.unwrap();
 
     loop {
@@ -409,7 +360,7 @@ pub async fn client_loop(stream: TcpStream, store_tx: Sender<StoreCommand>, conf
                             client.send_error_message(&error.to_string()).await;
                         }
                         Ok(ClientStatus::Replica) => {
-                            replica_loop(client).await;
+                            client_replica_loop(client).await;
                             break;
                         }
                         _ => {} // All good

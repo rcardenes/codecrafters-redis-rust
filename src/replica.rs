@@ -1,15 +1,21 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Error, Result};
 use sha1::{Sha1, Digest};
 
-use tokio::net::TcpStream;
-use tokio::io::BufReader;
-use tokio::time::timeout;
+use tokio::{
+    io::BufReader,
+    net::TcpStream,
+    sync::mpsc::Sender,
+    time::timeout,
+};
 
-use crate::{TcpReader, get_string};
-use crate::config::Configuration;
-use crate::types::RedisType;
+use crate::{
+    config::Configuration,
+    io::*,
+    store::StoreCommand,
+    types::RedisType,
+};
 
 #[derive(Clone)]
 pub struct ReplicaInfo {
@@ -93,7 +99,16 @@ async fn send_psync(stream: &mut TcpReader) -> Result<()> {
 
     cmd.write(stream).await?;
     match timeout(TIMEOUT, get_string(stream)).await {
-        Ok(Ok(Some(s))) => if !s.starts_with("+FULLRESYNC") { bail !("expected FULLRESYNC at initial PSYNC. Got: {s:?}") },
+        Ok(Ok(Some(s))) => {
+            if !s.starts_with("+FULLRESYNC") {
+                bail !("expected FULLRESYNC at initial PSYNC. Got: {s:?}")
+            }
+            else {
+                // Read the transmitted RDB file
+                let _rdb = read_bulk_bytes(stream).await?;
+                eprintln!("PSYNC -> {s:?}");
+            }
+        }
         Ok(Err(_)) => eprintln!("Error when reading the answer PSYNC"),
         Err(_) => eprintln!("Timeout when waiting for an answer for PSYNC"),
         _ => {},
@@ -119,7 +134,40 @@ async fn handshake(stream: &mut TcpReader, config: &Configuration) -> Result<()>
     Ok(())
 }
 
-pub async fn replica_setup(address: String, config: &Configuration) {
+async fn handle_set(stream: &mut TcpReader, store_tx: &Sender<StoreCommand>, args: &[&str]) -> Result<()> {
+    let now = SystemTime::now();
+    match args.len() {
+        2 | 4 => {
+            let duration = if args.len() == 4 {
+                if args[2].to_ascii_lowercase() == "px" {
+                    Some(Duration::from_millis(args[3]
+                            .parse::<u64>()
+                            .map_err(|_| Error::msg("value is not an integer or out of range"))?
+                    ))
+                } else {
+                    bail!("syntax error")
+                }
+            } else {
+                None
+            };
+            let key = String::from(args[0]);
+            let value = RedisType::String(args[1].into());
+            store_tx.send(
+                if let Some(dur) = duration {
+                    let until = now.checked_add(dur).unwrap();
+
+                    StoreCommand::SetEx { key, value, until }
+                } else {
+                    StoreCommand::Set { key, value }
+                }).await.unwrap();
+
+            write_ok(stream).await
+        }
+        _ => bail!("wrong number of arguments for 'set' command")
+    }
+}
+
+pub async fn replica_loop(address: String, config: Configuration, store_tx: Sender<StoreCommand>) {
     let stream = match TcpStream::connect(address.clone()).await {
         Ok(stream) => stream,
         Err(error) => {
@@ -134,5 +182,22 @@ pub async fn replica_setup(address: String, config: &Configuration) {
     if let Err(_) = handshake(&mut stream, &config).await {
         eprintln!("Replica setup: error when trying to handshake");
         return
+    }
+
+    loop {
+        match read_command(&mut stream).await {
+            Ok(cnt) => match cnt {
+                Some(cmd) => {
+                    let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+                    if strs[0].to_ascii_lowercase() == "set" {
+                        let _ = handle_set(&mut stream, &store_tx, &strs.as_slice()[1..]).await;
+                    }
+                }
+                None => {},
+            },
+            Err(error) => {
+                eprintln!("Replica: {error}");
+            }
+        }
     }
 }

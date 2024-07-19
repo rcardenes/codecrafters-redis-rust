@@ -1,7 +1,6 @@
 use anyhow::Result;
 
 use crate::io::*;
-use crate::TcpReader;
 
 #[derive(Debug, Clone)]
 pub enum RedisType {

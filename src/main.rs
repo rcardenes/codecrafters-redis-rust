@@ -9,7 +9,7 @@ use redis_starter_rust::client;
 use redis_starter_rust::config::{config_loop, Configuration, self};
 use redis_starter_rust::store::{store_loop, Store, self};
 use redis_starter_rust::rdb::Rdb;
-use redis_starter_rust::replica::replica_setup;
+use redis_starter_rust::replica::replica_loop;
 
 fn parse_arguments(mut args: Args) -> Result<Vec<(String, String)>> {
     let mut pairs = vec![];
@@ -51,12 +51,18 @@ async fn main() -> Result<()> {
 
     let mut store = Store::default();
 
+    let (store_tx, store_rx) = mpsc::channel(store::CMD_BUFFER);
+
     // Don't read from the Rdb file if this is a replica
     if config.is_replica() {
         // Contact the master server and get the initial
         // Rdb file
         let address = config.get("replicaof").unwrap();
-        replica_setup(address, &config).await;
+        let cfg2 = config.clone();
+        let stx2 = store_tx.clone();
+        tokio::spawn(async move {
+            replica_loop(address, cfg2, stx2).await;
+        });
 
         // TODO: Eventually we want to do this right...
         // todo!();
@@ -72,8 +78,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Spin the Store tas and start listening for connections
-    let (store_tx, store_rx) = mpsc::channel(store::CMD_BUFFER);
+    // Spin the Store task
     tokio::spawn(async move {
         store_loop(store, store_rx).await;
     });
