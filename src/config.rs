@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tokio::sync::mpsc::{Sender, Receiver};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     info,
@@ -27,10 +27,10 @@ const DEFAULT_CONFIG: &[(&str, &str)] = &[
 ];
 
 pub enum ConfigCommand {
-    Get { tx: Sender<Vec<String>>, items: Vec<String> },
-    AllInfo(Sender<String>),
-    InfoOn { tx: Sender<Vec<String>>, sections: Vec<String> },
-    ReplicaDigest(Sender<String>),
+    Get { tx: oneshot::Sender<Vec<String>>, items: Vec<String> },
+    AllInfo(oneshot::Sender<String>),
+    InfoOn { tx: oneshot::Sender<Vec<String>>, sections: Vec<String> },
+    ReplicaDigest(oneshot::Sender<String>),
 }
 
 #[derive(Clone)]
@@ -104,7 +104,7 @@ impl Configuration {
     }
 }
 
-pub async fn config_loop(config: Configuration, mut rx: Receiver<ConfigCommand>) {
+pub async fn config_loop(config: Configuration, mut rx: mpsc::Receiver<ConfigCommand>) {
     loop {
         if let Some(cmd) = rx.recv().await {
             match cmd {

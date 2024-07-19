@@ -5,6 +5,7 @@ use itertools::Itertools;
 
 use tokio::{
     sync::mpsc::{Receiver, Sender, self},
+    sync::oneshot,
     io::{AsyncReadExt, AsyncWriteExt, BufReader}, net::TcpStream,
 };
 
@@ -207,10 +208,10 @@ impl Client {
                  let keys = args.iter()
                      .map(|arg| arg.to_lowercase().to_string())
                      .collect();
-                 let (tx, mut rx) = mpsc::channel(1);
+                 let (tx, rx) = oneshot::channel();
                  self.config_tx.send(ConfigCommand::Get { tx, items: keys }).await.unwrap();
                  // There is going to be an answer, ignore the possible Error (for the time being)
-                 let values = rx.recv().await.unwrap();
+                 let values = rx.await.unwrap();
                  let redis_values = values.into_iter().map(RedisType::from).collect();
                  RedisType::Array(redis_values).write(&mut self.stream).await
              }
@@ -282,16 +283,16 @@ impl Client {
 
     async fn handle_info(&mut self, args: &[&str]) -> Result<()> {
          let answer = if args.is_empty() {
-             let (tx, mut rx) = mpsc::channel(1);
+             let (tx, rx) = oneshot::channel();
              self.config_tx.send(ConfigCommand::AllInfo(tx)).await.unwrap();
-             rx.recv().await.unwrap() + "\r\n"
+             rx.await.unwrap() + "\r\n"
              // info::all_info(&config) + "\r\n"
          } else {
-             let (tx, mut rx) = mpsc::channel(1);
+             let (tx, rx) = oneshot::channel();
              let sections = args.iter().map(|s| s.to_lowercase()).unique().collect();
 
              self.config_tx.send(ConfigCommand::InfoOn {tx, sections}).await.unwrap();
-             let answer = rx.recv().await.unwrap();
+             let answer = rx.await.unwrap();
         
              if answer.len() > 0 {
                  answer.join("") + "\r\n"
@@ -309,9 +310,9 @@ impl Client {
     }
 
     async fn handle_psync(&mut self) -> Result<Receiver<Vec<u8>>> {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, rx) = oneshot::channel();
         self.config_tx.send(ConfigCommand::ReplicaDigest(tx)).await.unwrap();
-        let id = rx.recv().await.unwrap();
+        let id = rx.await.unwrap();
 
         let (replica_tx, replica_rx) = mpsc::channel(16);
         self.store_tx.send(StoreCommand::InitReplica(replica_tx)).await.unwrap();
