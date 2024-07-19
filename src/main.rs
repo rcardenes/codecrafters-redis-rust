@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
         let address = config.get("replicaof").unwrap();
         replica_setup(address, &config).await;
 
-        todo!();
+        // TODO: Eventually we want to do this right...
+        // todo!();
     } else {
         if let Ok(db_path) = db_path {
             if let Ok(mut rdb) = Rdb::open(db_path.as_path()).await {

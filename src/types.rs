@@ -7,6 +7,7 @@ use crate::TcpReader;
 pub enum RedisType {
     String(String),
     Int(i64),
+    Timestamp(u128),
     Array(Vec<RedisType>),
 }
 
@@ -39,14 +40,42 @@ impl RedisType {
                             RedisType::Int(number) => {
                                 write_integer(stream, *number).await?
                             },
+                            RedisType::Timestamp(_) => todo!(),
                         }
                     } else {
                         stack.pop();
                     }
                 }
             }
+            RedisType::Timestamp(_) => todo!(),
         }
         Ok(())
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        match self {
+            RedisType::String(string) => {
+                format!("${}\r\n{}\r\n", string.len(), string)
+                    .as_bytes()
+                    .to_vec()
+            }
+            RedisType::Int(number) => {
+                format!(":{number}\r\n").as_bytes().to_vec()
+            }
+            RedisType::Timestamp(millis) => {
+                format!(":{millis}\r\n").as_bytes().to_vec()
+            }
+            RedisType::Array(array) => {
+                let mut size = format!("*{}\r\n", array.len()).as_bytes().to_vec();
+
+                size.extend( 
+                    array.iter() .map(|comp| comp.to_vec())
+                    .collect::<Vec<_>>()
+                    .concat());
+
+                size
+            }
+        }
     }
 }
 

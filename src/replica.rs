@@ -93,7 +93,7 @@ async fn send_psync(stream: &mut TcpReader) -> Result<()> {
 
     cmd.write(stream).await?;
     match timeout(TIMEOUT, get_string(stream)).await {
-        Ok(Ok(Some(s))) => if s != "+OK" { bail !("expected OK at initial PSYNC. Got: {s:?}") },
+        Ok(Ok(Some(s))) => if !s.starts_with("+FULLRESYNC") { bail !("expected FULLRESYNC at initial PSYNC. Got: {s:?}") },
         Ok(Err(_)) => eprintln!("Error when reading the answer PSYNC"),
         Err(_) => eprintln!("Timeout when waiting for an answer for PSYNC"),
         _ => {},

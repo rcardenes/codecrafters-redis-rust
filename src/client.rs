@@ -4,7 +4,6 @@ use anyhow::{bail, Error, Result};
 use itertools::Itertools;
 
 use tokio::{
-    select,
     sync::mpsc::{Receiver, Sender, self},
     io::{AsyncReadExt, AsyncWriteExt, BufReader}, net::TcpStream,
 };
@@ -102,6 +101,11 @@ struct Client {
     config_tx: Sender<ConfigCommand>,
 }
 
+enum ClientStatus {
+    Normal,
+    Replica,
+}
+
 impl Client {
     async fn send_error_message(&mut self, msg: &str) {
         let msg = format!("-ERR {}\r\n", msg);
@@ -183,7 +187,8 @@ impl Client {
                         Some(RedisType::Array(_)) => {
                             write_wrongtype(&mut self.stream).await
                         }
-                        None => write_nil(&mut self.stream).await
+                        Some(RedisType::Timestamp(_)) => todo!(),
+                        None => write_nil(&mut self.stream).await,
                     }
                 } else {
                     bail!("internal error trying to get the value")
@@ -303,23 +308,23 @@ impl Client {
         write_simple_string(&mut self.stream, "OK").await
     }
 
-    async fn handle_psync(&mut self, args: &[&str]) -> Result<()> {
-        if args != &["?", "-1"] {
-            write_simple_error(&mut self.stream, "ERR Unsupported PSYNC arguments").await?;
-            bail!("wrong arguments for PSYNC");
-        }
-
+    async fn handle_psync(&mut self) -> Result<Receiver<Vec<u8>>> {
         let (tx, mut rx) = mpsc::channel(1);
-        self.config_tx.send(ConfigCommand::RepicaDigest(tx)).await.unwrap();
+        self.config_tx.send(ConfigCommand::ReplicaDigest(tx)).await.unwrap();
         let id = rx.recv().await.unwrap();
+
+        let (replica_tx, replica_rx) = mpsc::channel(16);
+        self.store_tx.send(StoreCommand::InitReplica(replica_tx)).await.unwrap();
         write_simple_string(&mut self.stream, &format!("FULLRESYNC {id} 0")).await?;
         // Empty RDB transfer for the time being. The file was generated using
         // the official Redis server.
         let empty_rdb = b"REDIS0010\xff\x00\x00\x00\x00\x00\x00\x00\x00";
-        write_bytes(&mut self.stream, empty_rdb).await
+        write_bytes(&mut self.stream, empty_rdb).await?;
+
+        Ok(replica_rx)
     }
 
-    pub async fn dispatch(&mut self, cmd_vec: &[&str]) -> Result<()> {
+    pub async fn dispatch(&mut self, cmd_vec: &[&str]) -> Result<ClientStatus> {
         let name = cmd_vec[0];
         let args = &cmd_vec[1..];
         match name.to_ascii_lowercase().as_str() {
@@ -332,7 +337,14 @@ impl Client {
             "keys" => self.handle_keys(args).await?,
             "info" => self.handle_info(args).await?,
             "replconf" => self.handle_replconf(args).await?,
-            "psync" => self.handle_psync(args).await?,
+            "psync" => {
+                if args != &["?", "-1"] {
+                    write_simple_error(&mut self.stream, "ERR Unsupported PSYNC arguments").await?;
+                    bail!("wrong arguments for PSYNC");
+                }
+
+                return Ok(ClientStatus::Replica);
+            }
             _ => {
                 let args = cmd_vec[1..]
                     .iter()
@@ -342,7 +354,18 @@ impl Client {
                 bail!("unknown command '{}', with args beginning with: {}", name, args)
             }
         }
-        Ok(())
+        Ok(ClientStatus::Normal)
+    }
+}
+
+
+async fn replica_loop(mut client: Client) {
+    let mut replica_rx = client.handle_psync().await.unwrap();
+
+    loop {
+        let data = replica_rx.recv().await.unwrap();
+
+        client.stream.write(&data).await.unwrap();
     }
 }
 
@@ -376,23 +399,26 @@ pub async fn client_loop(stream: TcpStream, store_tx: Sender<StoreCommand>, conf
     };
 
     loop {
-        select! {
-            ret = read_command(&mut client.stream) => {
-                match ret {
-                    Ok(cnt) => match cnt {
-                        Some(cmd) => {
-                            let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-                            if let Err(error) = client.dispatch(strs.as_slice()).await {
-                                client.send_error_message(&error.to_string()).await;
-                            }
+        match read_command(&mut client.stream).await {
+            Ok(cnt) => match cnt {
+                Some(cmd) => {
+                    let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+                    match client.dispatch(strs.as_slice()).await {
+                        Err(error) => {
+                            client.send_error_message(&error.to_string()).await;
                         }
-                        None => {}
-                    },
-                    Err(error) => {
-                        client.send_error_message(&error.to_string()).await;
-                        break;
+                        Ok(ClientStatus::Replica) => {
+                            replica_loop(client).await;
+                            break;
+                        }
+                        _ => {} // All good
                     }
                 }
+                None => {}
+            },
+            Err(error) => {
+                client.send_error_message(&error.to_string()).await;
+                break;
             }
         }
     }

@@ -30,7 +30,7 @@ pub enum ConfigCommand {
     Get { tx: Sender<Vec<String>>, items: Vec<String> },
     AllInfo(Sender<String>),
     InfoOn { tx: Sender<Vec<String>>, sections: Vec<String> },
-    RepicaDigest(Sender<String>),
+    ReplicaDigest(Sender<String>),
 }
 
 #[derive(Clone)]
@@ -124,7 +124,7 @@ pub async fn config_loop(config: Configuration, mut rx: Receiver<ConfigCommand>)
                                     .map(|sec| info::info_on(&config, sec.as_str()))
                                     .collect()).await.unwrap();
                 }
-                ConfigCommand::RepicaDigest(tx) => {
+                ConfigCommand::ReplicaDigest(tx) => {
                     tx.send(config.replica_info().digest_string()).await.unwrap();
                 }
             }
