@@ -231,6 +231,10 @@ impl Client {
         // Trivial implementation. We're ignoring all the REPLCONF details for now
         write_simple_string(&mut self.stream, "OK").await
     }
+    async fn handle_wait(&mut self, _: &[&str]) -> Result<()> {
+        // Trivial implementation. We're ignoring all the REPLCONF details for now
+        write_integer(&mut self.stream, 0).await
+    }
 
     async fn handle_psync(&mut self) -> Result<Receiver<Vec<u8>>> {
         let (tx, rx) = oneshot::channel();
@@ -261,6 +265,7 @@ impl Client {
             "keys" => self.handle_keys(args).await?,
             "info" => self.handle_info(args).await?,
             "replconf" => self.handle_replconf(args).await?,
+            "wait" => self.handle_wait(args).await?,
             "psync" => {
                 if args != &["?", "-1"] {
                     write_simple_error(&mut self.stream, "ERR Unsupported PSYNC arguments").await?;
