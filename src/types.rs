@@ -89,3 +89,9 @@ impl From<String> for RedisType {
         RedisType::String(value)
     }
 }
+
+impl From<Vec<&str>> for RedisType {
+    fn from(value: Vec<&str>) -> Self {
+        RedisType::Array(value.into_iter().map(RedisType::from).collect())
+    }
+}

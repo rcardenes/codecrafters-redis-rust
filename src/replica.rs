@@ -53,7 +53,7 @@ struct Replica {
 
 impl Replica {
     async fn ping(&mut self) -> Result<()> {
-        let cmd = RedisType::Array(vec![RedisType::from("PING")]);
+        let cmd = RedisType::from(vec!["PING"]);
         cmd.write(&mut self.stream).await?;
 
         match timeout(TIMEOUT, get_string(&mut self.stream)).await? {
@@ -65,10 +65,11 @@ impl Replica {
     }
 
     async fn send_replconf(&mut self, config: &Configuration) -> Result<()> {
-        let cmd = RedisType::Array(vec![
-            RedisType::from("REPLCONF"),
-            RedisType::from("listening-port"),
-            RedisType::from(config.get("port").unwrap()),
+        let port = config.get("port").unwrap();
+        let cmd = RedisType::from(vec![
+            "REPLCONF",
+            "listening-port",
+            port.as_str()
         ]);
 
         cmd.write(&mut self.stream).await?;
@@ -80,11 +81,7 @@ impl Replica {
         }
 
 
-        let cmd = RedisType::Array(vec![
-            RedisType::from("REPLCONF"),
-            RedisType::from("capa"),
-            RedisType::from("psync2"),
-        ]);
+        let cmd = RedisType::from(vec!["REPLCONF", "capa", "psync2"]);
 
         cmd.write(&mut self.stream).await?;
         match timeout(TIMEOUT, get_string(&mut self.stream)).await {
@@ -98,11 +95,7 @@ impl Replica {
     }
 
     async fn send_psync(&mut self) -> Result<()> {
-        let cmd = RedisType::Array(vec![
-            RedisType::from("PSYNC"),
-            RedisType::from("?"),
-            RedisType::from("-1"),
-        ]);
+        let cmd = RedisType::from(vec!["PSYNC", "?", "-1",]);
 
         cmd.write(&mut self.stream).await?;
         match timeout(TIMEOUT, get_string(&mut self.stream)).await {
@@ -150,11 +143,9 @@ impl Replica {
             2 => {
                 if args[0].to_ascii_lowercase() == "getack" {
                     if args[1] == "*" {
-                        RedisType::Array(vec![
-                            RedisType::from("REPLCONF"),
-                            RedisType::from("ACK"),
-                            RedisType::from("0")
-                        ]).write(&mut self.stream).await
+                        RedisType::from(vec![ "REPLCONF", "ACK", "0" ])
+                            .write(&mut self.stream)
+                            .await
                     } else {
                         bail!("unsupported argument {:?} for REPLCONF GETACK", args[1]);
                     }
