@@ -49,6 +49,7 @@ static TIMEOUT: Duration = Duration::from_millis(1000);
 struct Replica {
     stream: TcpReader,
     store_tx: Sender<StoreCommand>,
+    total_bytes: usize,
 }
 
 impl Replica {
@@ -57,14 +58,14 @@ impl Replica {
         cmd.write(&mut self.stream).await?;
 
         match timeout(TIMEOUT, get_string(&mut self.stream)).await? {
-            Ok(Some(s)) => if s != "+PONG" { bail!("expected PONG") },
+            Ok(Some(RedisString { string, .. } )) => if string != "+PONG" { bail!("expected PONG") },
             _ => bail!("Unknown error!")
         }
 
         Ok(())
     }
 
-    async fn send_replconf(&mut self, config: &Configuration) -> Result<()> {
+    async fn handshake_replconf(&mut self, config: &Configuration) -> Result<()> {
         let port = config.get("port").unwrap();
         let cmd = RedisType::from(vec![
             "REPLCONF",
@@ -74,7 +75,9 @@ impl Replica {
 
         cmd.write(&mut self.stream).await?;
         match timeout(TIMEOUT, get_string(&mut self.stream)).await {
-            Ok(Ok(Some(s))) => if s != "+OK" { bail !("expected OK at first REPLCONF") },
+            Ok(Ok(Some(RedisString { string, .. }))) => {
+                if string != "+OK" { bail !("expected OK at first REPLCONF") }
+            }
             Ok(Err(_)) => eprintln!("Error when reading the answer for the first REPLCONF"),
             Err(_) => eprintln!("Timeout when waiting for an answer for the first REPLCONF"),
             _ => {},
@@ -85,7 +88,9 @@ impl Replica {
 
         cmd.write(&mut self.stream).await?;
         match timeout(TIMEOUT, get_string(&mut self.stream)).await {
-            Ok(Ok(Some(s))) => if s != "+OK" { bail !("expected OK at second REPLCONF") },
+            Ok(Ok(Some(RedisString { string, .. }))) => {
+                if string != "+OK" { bail !("expected OK at second REPLCONF") }
+            }
             Ok(Err(_)) => eprintln!("Error when reading the answer for the second REPLCONF"),
             Err(_) => eprintln!("Timeout when waiting for an answer for the second REPLCONF"),
             _ => {},
@@ -94,19 +99,19 @@ impl Replica {
         Ok(())
     }
 
-    async fn send_psync(&mut self) -> Result<()> {
+    async fn handshake_psync(&mut self) -> Result<()> {
         let cmd = RedisType::from(vec!["PSYNC", "?", "-1",]);
 
         cmd.write(&mut self.stream).await?;
         match timeout(TIMEOUT, get_string(&mut self.stream)).await {
-            Ok(Ok(Some(s))) => {
-                if !s.starts_with("+FULLRESYNC") {
-                    bail !("expected FULLRESYNC at initial PSYNC. Got: {s:?}")
+            Ok(Ok(Some(RedisString { string, .. }))) => {
+                if !string.starts_with("+FULLRESYNC") {
+                    bail !("expected FULLRESYNC at initial PSYNC. Got: {string:?}")
                 }
                 else {
                     // Read the transmitted RDB file
                     let _rdb = read_bulk_bytes(&mut self.stream).await?;
-                    eprintln!("PSYNC -> {s:?}");
+                    eprintln!("PSYNC -> {string:?}");
                 }
             }
             Ok(Err(_)) => eprintln!("Error when reading the answer PSYNC"),
@@ -122,11 +127,11 @@ impl Replica {
             eprintln!("Replica handshake error at PING: {error}");
             bail!("Error during handshake");
         }
-        if let Err(error) = self.send_replconf(config).await {
+        if let Err(error) = self.handshake_replconf(config).await {
             eprintln!("Replica handshake error at REPLCONF: {error}");
             bail!("Error during handshake");
         }
-        if let Err(error) = self.send_psync().await {
+        if let Err(error) = self.handshake_psync().await {
             eprintln!("Replica handshake error at PSYNC: {error}");
             bail!("Error during handshake");
         }
@@ -135,7 +140,7 @@ impl Replica {
     }
 
     async fn handle_set(&mut self, args: &[&str]) -> Result<()> {
-        handle_set(&mut self.stream, &self.store_tx, args).await
+        handle_set(&mut self.stream, &self.store_tx, args, false).await
     }
 
     async fn handle_replconf(&mut self, args: &[&str]) -> Result<()> {
@@ -143,9 +148,12 @@ impl Replica {
             2 => {
                 if args[0].to_ascii_lowercase() == "getack" {
                     if args[1] == "*" {
-                        RedisType::from(vec![ "REPLCONF", "ACK", "0" ])
-                            .write(&mut self.stream)
-                            .await
+                        RedisType::from(vec![
+                            "REPLCONF",
+                            "ACK",
+                            self.total_bytes.to_string().as_str()
+                        ]).write(&mut self.stream)
+                          .await
                     } else {
                         bail!("unsupported argument {:?} for REPLCONF GETACK", args[1]);
                     }
@@ -163,7 +171,11 @@ impl Replica {
         match name.to_ascii_lowercase().as_str() {
             "set" => self.handle_set(args).await,
             "replconf" => self.handle_replconf(args).await,
+            "ping" => {
+                Ok(())
+            }
             _ => {
+                eprintln!("Replica: got unsupported command {name:?}");
                 let args = cmd_vec[1..]
                     .iter()
                     .map(|s| format!("'{}'", *s))
@@ -188,6 +200,7 @@ pub async fn replica_loop(address: String, config: Configuration, store_tx: Send
     let mut replica = Replica {
         stream: BufReader::new(stream),
         store_tx,
+        total_bytes: 0,
     };
 
     if let Err(_) = replica.handshake(&config).await {
@@ -198,10 +211,12 @@ pub async fn replica_loop(address: String, config: Configuration, store_tx: Send
     loop {
         match read_command(&mut replica.stream).await {
             Ok(cnt) => match cnt {
-                Some(cmd) => {
-                    let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+                Some(Command { payload, length } ) => {
+                    eprintln!("Replica: get {length} bytes with command {payload:?}");
+                    let strs = payload.iter().map(|s| s.as_str()).collect::<Vec<_>>();
                     // Don't do error handling right now
                     let _ = replica.dispatch(strs.as_slice()).await;
+                    replica.total_bytes += length;
                 }
                 None => {},
             },

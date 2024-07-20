@@ -3,7 +3,28 @@ use tokio::io::{AsyncReadExt, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 pub type TcpReader = BufReader<TcpStream>;
-pub type Command = Vec<String>;
+
+#[derive(Debug)]
+pub struct RedisString {
+    pub string: String,
+    pub bytes: usize,
+}
+
+struct BulkLength {
+    length: usize,
+    bytes: usize,
+}
+
+pub struct Command {
+    pub payload: Vec<String>,
+    pub length: usize,
+}
+
+impl Command {
+    fn new(payload: Vec<String>, length: usize) -> Self {
+        Command { payload, length }
+    }
+}
 
 pub async fn write_ok(stream: &mut TcpReader) -> Result<()> {
     stream.write(b"+OK\r\n").await.map(|_| Ok(()))?
@@ -49,14 +70,17 @@ pub async fn write_array_size(stream: &mut TcpReader, size: usize) -> Result<()>
     stream.write(size.as_bytes()).await.map(|_| Ok(()))?
 }
 
-pub async fn get_string(stream: &mut TcpReader) -> Result<Option<String>> {
+pub async fn get_string(stream: &mut TcpReader) -> Result<Option<RedisString>> {
     let mut buf = String::new();
-    let read_chars = stream.read_line(&mut buf).await?;
+    let read_bytes = stream.read_line(&mut buf).await?;
 
-    if read_chars == 0 {
+    if read_bytes == 0 {
         Ok(None)
     } else {
-        Ok(Some((&buf[0..read_chars -2]).to_string()))
+        Ok(Some(RedisString {
+            string: (&buf[0..read_bytes -2]).to_string(),
+            bytes: read_bytes
+        }))
     }
 }
 
@@ -64,16 +88,16 @@ fn format_error<'a>(chr: char) -> String {
     format!("Protocol error: expected '$', got '{}'", chr)
 }
 
-async fn read_bulk_length(stream: &mut TcpReader) -> Result<Option<usize>> {
-    if let Some(size_string) = get_string(stream).await? {
-        if size_string.is_empty() {
+async fn read_bulk_length(stream: &mut TcpReader) -> Result<Option<BulkLength>> {
+    if let Some(RedisString { string, bytes }) = get_string(stream).await? {
+        if string.is_empty() {
             bail!(format_error(' '))
-        } else if !size_string.starts_with("$") {
-            bail!(format_error(size_string.chars().next().unwrap()))
+        } else if !string.starts_with("$") {
+            bail!(format_error(string.chars().next().unwrap()))
         } else {
-            let string_size = size_string[1..].parse::<usize>()
+            let string_size = string[1..].parse::<usize>()
                 .map_err(|_| Error::msg("Protocol error: invalid bulk length"))?;
-            Ok(Some(string_size))
+            Ok(Some(BulkLength { length: string_size, bytes }))
         }
     } else {
         Ok(None)
@@ -82,7 +106,7 @@ async fn read_bulk_length(stream: &mut TcpReader) -> Result<Option<usize>> {
 
 pub async fn read_bulk_bytes(stream: &mut TcpReader) -> Result<Option<Vec<u8>>> {
     if let Some(string_size) = read_bulk_length(stream).await? {
-        let mut buf: Vec<u8> = vec![0; string_size];
+        let mut buf: Vec<u8> = vec![0; string_size.length];
         stream.read_exact(buf.as_mut_slice()).await?;
         Ok(Some(buf))
     } else {
@@ -90,12 +114,12 @@ pub async fn read_bulk_bytes(stream: &mut TcpReader) -> Result<Option<Vec<u8>>> 
     }
 }
 
-async fn read_bulk_string(stream: &mut TcpReader) -> Result<Option<String>> {
-    if let Some(string_size) = read_bulk_length(stream).await? {
+async fn read_bulk_string(stream: &mut TcpReader) -> Result<Option<RedisString>> {
+    if let Some(BulkLength { length: string_size, bytes }) = read_bulk_length(stream).await? {
         let mut buf: Vec<u8> = vec![0; string_size + 2];
         stream.read_exact(buf.as_mut_slice()).await?;
         let bulk_string = String::from_utf8_lossy(&buf[..string_size]).to_string();
-        Ok(Some(bulk_string))
+        Ok(Some(RedisString { string: bulk_string, bytes: bytes + string_size + 2 }))
     } else {
         Ok(None)
     }
@@ -103,22 +127,27 @@ async fn read_bulk_string(stream: &mut TcpReader) -> Result<Option<String>> {
 
 pub async fn read_command(stream: &mut TcpReader) -> Result<Option<Command>> {
     if let Some(text) = get_string(stream).await? {
-        eprintln!("read_command: {text:?}");
-        if text.starts_with("*") {
-            let chunks = text[1..].parse::<usize>()
+        let mut bytes_read = text.bytes;
+
+        let elements = if text.string.starts_with("*") {
+            let chunks = text.string[1..].parse::<usize>()
                 .map_err(|_| Error::msg("Protocol error: invalid multibulk length"))?;
-            let mut cmd = Command::new();
+            let mut cmd = vec![];
             for _ in 0..chunks {
                 if let Some(cmd_part) = read_bulk_string(stream).await? {
-                    cmd.push(cmd_part);
+                    cmd.push(cmd_part.string);
+                    bytes_read += cmd_part.bytes;
                 } else {
                     return Ok(None)
                 }
             }
-            Ok(Some(cmd))
+
+            cmd
         } else {
-            Ok(Some(text.split_whitespace().map(|s| s.to_string()).collect()))
-        }
+            text.string.split_whitespace().map(|s| s.to_string()).collect()
+        };
+
+        Ok(Some(Command::new(elements, bytes_read)))
     } else {
         Ok(None)
     }

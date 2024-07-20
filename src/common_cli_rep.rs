@@ -8,7 +8,7 @@ use crate::io::*;
 use crate::store::StoreCommand;
 use crate::types::RedisType;
 
-pub async fn handle_set(stream: &mut TcpReader, store_tx: &Sender<StoreCommand>, args: &[&str]) -> Result<()> {
+pub async fn handle_set(stream: &mut TcpReader, store_tx: &Sender<StoreCommand>, args: &[&str], ack: bool) -> Result<()> {
     let now = SystemTime::now();
     match args.len() {
         2 | 4 => {
@@ -35,7 +35,11 @@ pub async fn handle_set(stream: &mut TcpReader, store_tx: &Sender<StoreCommand>,
                     StoreCommand::Set { key, value }
                 }).await.unwrap();
 
-            write_ok(stream).await
+            if ack {
+                write_ok(stream).await
+            } else {
+                Ok(())
+            }
         }
         _ => bail!("wrong number of arguments for 'set' command")
     }

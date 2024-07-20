@@ -92,7 +92,7 @@ impl Client {
     }
 
     async fn handle_set(&mut self, args: &[&str]) -> Result<()> {
-        handle_set(&mut self.stream, &self.store_tx, args).await
+        handle_set(&mut self.stream, &self.store_tx, args, true).await
     }
 
     async fn handle_get(&mut self, args: &[&str]) -> Result<()> {
@@ -325,8 +325,8 @@ pub async fn client_loop(stream: TcpStream, store_tx: Sender<StoreCommand>, conf
     loop {
         match read_command(&mut client.stream).await {
             Ok(cnt) => match cnt {
-                Some(cmd) => {
-                    let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+                Some(Command { payload, .. }) => {
+                    let strs = payload.iter().map(|s| s.as_str()).collect::<Vec<_>>();
                     match client.dispatch(strs.as_slice()).await {
                         Err(error) => {
                             client.send_error_message(&error.to_string()).await;
