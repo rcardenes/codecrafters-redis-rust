@@ -307,7 +307,6 @@ pub async fn client_loop(stream: TcpStream, store_tx: Sender<StoreCommand>, conf
     // to certain commands.
     let (client_tx, mut client_rx) = mpsc::channel::<CommandResponse>(CLIENT_BUFFER);
 
-    eprintln!("Client: registering with the store");
     match store_tx.send(StoreCommand::InitClient(client_tx)).await {
         Err(error) => { eprintln!("Error: {error}"); return },
         _ => {}
@@ -317,7 +316,6 @@ pub async fn client_loop(stream: TcpStream, store_tx: Sender<StoreCommand>, conf
         CommandResponse::ClientId(id) => id,
         _ => panic!("Client didn't receive an ID!"),
     };
-    eprintln!("Client: registered with id {client_id}");
 
     let mut client = Client {
         id: client_id,
