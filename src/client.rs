@@ -275,7 +275,7 @@ impl Client {
                     .map(|s| format!("'{}'", *s))
                     .collect::<Vec<_>>()
                     .join(" ");
-                bail!("unknown command '{}', with args beginning with: {}", name, args)
+                bail!("Client: unknown command '{}', with args beginning with: {}", name, args)
             }
         }
         Ok(ClientStatus::Normal)

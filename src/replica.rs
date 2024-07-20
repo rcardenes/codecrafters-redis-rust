@@ -1,6 +1,6 @@
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use anyhow::{bail, Error, Result};
+use anyhow::{bail, Result};
 use sha1::{Sha1, Digest};
 
 use tokio::{
@@ -144,6 +144,44 @@ impl Replica {
     async fn handle_set(&mut self, args: &[&str]) -> Result<()> {
         handle_set(&mut self.stream, &self.store_tx, args).await
     }
+
+    async fn handle_replconf(&mut self, args: &[&str]) -> Result<()> {
+        match args.len() {
+            2 => {
+                if args[0].to_ascii_lowercase() == "getack" {
+                    if args[1] == "*" {
+                        RedisType::Array(vec![
+                            RedisType::from("REPLCONF"),
+                            RedisType::from("ACK"),
+                            RedisType::from("0")
+                        ]).write(&mut self.stream).await
+                    } else {
+                        bail!("unsupported argument {:?} for REPLCONF GETACK", args[1]);
+                    }
+                } else {
+                    bail!("unsupported argument {:?} for REPLCONF", args[0]);
+                }
+            }
+            _ => bail!("wrong number of arguments for 'replconf'"),
+        }
+    }
+
+    async fn dispatch(&mut self, cmd_vec: &[&str]) -> Result<()> {
+        let name = cmd_vec[0];
+        let args = &cmd_vec[1..];
+        match name.to_ascii_lowercase().as_str() {
+            "set" => self.handle_set(args).await,
+            "replconf" => self.handle_replconf(args).await,
+            _ => {
+                let args = cmd_vec[1..]
+                    .iter()
+                    .map(|s| format!("'{}'", *s))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                bail!("Replica: unknown command '{}', with args beginning with: {}", name, args)
+            }
+        }
+    }
 }
 
 pub async fn replica_loop(address: String, config: Configuration, store_tx: Sender<StoreCommand>) {
@@ -171,9 +209,8 @@ pub async fn replica_loop(address: String, config: Configuration, store_tx: Send
             Ok(cnt) => match cnt {
                 Some(cmd) => {
                     let strs = cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-                    if strs[0].to_ascii_lowercase() == "set" {
-                        let _ = replica.handle_set(&strs.as_slice()[1..]).await;
-                    }
+                    // Don't do error handling right now
+                    let _ = replica.dispatch(strs.as_slice()).await;
                 }
                 None => {},
             },
