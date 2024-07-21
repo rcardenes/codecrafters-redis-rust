@@ -15,6 +15,7 @@ pub enum CommandResponse {
     ClientId(usize),
     Get(Option<RedisType>),
     Keys(RedisType),
+    ReplicaCount(usize),
 }
 
 pub enum StoreCommand {
@@ -24,6 +25,7 @@ pub enum StoreCommand {
     SetEx { key: String, value: RedisType, until: SystemTime },
     Get { id: usize, key: String },
     AllKeys(usize),
+    ReplicaCount(usize),
 }
 
 enum StoreValue {
@@ -140,6 +142,11 @@ pub async fn store_loop(mut store: Store, mut rx: Receiver<StoreCommand>) {
                         .map(|s| RedisType::from(s.as_str()))
                         .collect::<Vec<_>>();
                     clients[id].send(CommandResponse::Keys(RedisType::Array(keys))).await.unwrap()
+                }
+                StoreCommand::ReplicaCount(id) => {
+                    // TODO: The replica count is very naive because at the moment we're not doing
+                    //       anything about disconnected clients.
+                    clients[id].send(CommandResponse::ReplicaCount(replicas.len())).await.unwrap()
                 }
             }
         }

@@ -111,7 +111,6 @@ impl Replica {
                 else {
                     // Read the transmitted RDB file
                     let _rdb = read_bulk_bytes(&mut self.stream).await?;
-                    eprintln!("PSYNC -> {string:?}");
                 }
             }
             Ok(Err(_)) => eprintln!("Error when reading the answer PSYNC"),

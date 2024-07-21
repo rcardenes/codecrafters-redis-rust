@@ -232,8 +232,15 @@ impl Client {
         write_simple_string(&mut self.stream, "OK").await
     }
     async fn handle_wait(&mut self, _: &[&str]) -> Result<()> {
-        // Trivial implementation. We're ignoring all the REPLCONF details for now
-        write_integer(&mut self.stream, 0).await
+        self.store_tx.send(StoreCommand::ReplicaCount(self.id)).await.unwrap();
+        if let Some(CommandResponse::ReplicaCount(count)) = self.rx.recv().await {
+            write_integer(&mut self.stream, count as i64).await
+        } else {
+            let _ = write_simple_error(
+                &mut self.stream,
+                "internal error retrieving replica count").await;
+            bail!("Client: error getting the replica count!")
+        }
     }
 
     async fn handle_psync(&mut self) -> Result<Receiver<Vec<u8>>> {
